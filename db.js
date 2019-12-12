@@ -142,13 +142,12 @@ class Database extends EventEmitter {
     this.corestore.ready(() => {
       this.localWriter().ready(() => {
         this.indexer.add(this.localWriter())
-        cb()
+        this._initSchemas(() => {
+          this._opened = true
+          cb()
+        })
       })
     })
-    // this._initSchemas(() => {
-    //   this._opened = true
-    //   cb()
-    // })
   }
 
   get localKey () {
@@ -164,9 +163,7 @@ class Database extends EventEmitter {
   }
 
   _initSchemas (cb) {
-    const qs = this.api.records.bySchema('core/schema', {
-      live: true
-    })
+    const qs = this.api.records.get({ schema: 'core/schema' })
     this.loadStream(qs, (err, schemas) => {
       if (err) return cb(err)
       schemas.forEach(msg => this.schemas.put(msg.id, msg.value))
