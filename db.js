@@ -83,8 +83,6 @@ class Database extends EventEmitter {
 
     this.indexer = new Indexer(sub(this.lvl, 'indexer'))
 
-    this.corestore.on('feed', feed => this.indexer.add(feed))
-
     this.kappa = new Kappa()
 
     this.useRecordView('kv', createKvView)
@@ -112,9 +110,8 @@ class Database extends EventEmitter {
         msgs = msgs.filter(msg => msg.schema === 'core/source')
         msgs.forEach(msg => {
           const key = msg.value.key
-          // This triggers the 'feed' event on the corestore, which makes the feed
-          // get added to the indexer (see above)
-          self.corestore.get({ key, parent: self.key })
+          const feed = self.corestore.get({ key, parent: self.key })
+          self.indexer.add(feed, { scan: true })
         })
         next()
       }
@@ -143,7 +140,10 @@ class Database extends EventEmitter {
 
   ready (cb) {
     this.corestore.ready(() => {
-      this.localWriter().ready(cb)
+      this.localWriter().ready(() => {
+        this.indexer.add(this.localWriter())
+        cb()
+      })
     })
     // this._initSchemas(() => {
     //   this._opened = true
