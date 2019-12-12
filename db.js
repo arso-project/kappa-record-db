@@ -216,7 +216,7 @@ class Database extends EventEmitter {
   }
 
   get (req, cb) {
-    this.loadStream(this.kappa.api.records.get(req), cb)
+    this.loadStream(this.kappa.view.records.get(req), cb)
   }
 
   // get (id, cb) {

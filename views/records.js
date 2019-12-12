@@ -54,7 +54,7 @@ module.exports = function recordView (lvl, db) {
       },
 
       byId (kappa, id, opts) {
-        const rs = query(lvl, lvl, {
+        const rs = query(lvl, {
           ...opts,
           gte: ['is', id],
           lte: ['is', id, undefined]
@@ -69,7 +69,7 @@ module.exports = function recordView (lvl, db) {
           gte: ['is', id, schema],
           lte: ['is', id, schema, undefined]
         })
-      },
+      }
     }
   }
 }
