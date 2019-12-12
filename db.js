@@ -1,52 +1,25 @@
+const { EventEmitter } = require('events')
 const ram = require('random-access-memory')
 const sub = require('subleveldown')
 const memdb = require('level-mem')
-const Corestore = require('corestore')
-const Kappa = require('kappa-core')
-// const kappaCorestoreSource = require('kappa-core/sources/corestore')
 const collect = require('stream-collector')
 const crypto = require('crypto')
 const levelBaseView = require('kappa-view')
-const { EventEmitter } = require('events')
+
+const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
+const Corestore = require('corestore')
 
 const { uuid, through } = require('./lib/util')
-const { Record: RecordEncoding } = require('./lib/messages')
 const SchemaStore = require('./lib/schema')
+const Record = require('./lib/record')
+
 const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
 const createIndexview = require('./views/indexes')
 
 module.exports = function (opts) {
   return new Database(opts)
-}
-
-class Record {
-  static decode (buf, props = {}) {
-    let record = RecordEncoding.decode(buf)
-    record = { ...record, ...props }
-    if (Buffer.isBuffer(record.key)) record.key = record.key.toString('hex')
-    if (record.seq) record.seq = Number(record.seq)
-    if (record.value) record.value = JSON.parse(record.value)
-    return record
-  }
-
-  static decodeValue (msg) {
-    const value = msg.value
-    delete msg.value
-    return Record.decode(value, msg)
-  }
-
-  static encode (record) {
-    record = Record.encodeValue(record)
-    const buf = RecordEncoding.encode(record)
-    return buf
-  }
-
-  static encodeValue (record) {
-    if (record.value) record.value = JSON.stringify(record.value)
-    return record
-  }
 }
 
 function withDecodedRecords (view) {
@@ -177,7 +150,7 @@ class Database extends EventEmitter {
 
   put (record, opts, cb) {
     if (typeof opts === 'function') return this.put(record, {}, opts)
-    record.op = RecordEncoding.Type.PUT
+    record.op = Record.PUT
     record.schema = this.schemas.resolveName(record.schema)
 
     let validate = false
@@ -196,7 +169,7 @@ class Database extends EventEmitter {
     if (typeof id === 'object') id = id.id
     const record = {
       id,
-      op: RecordEncoding.Type.DEL
+      op: Record.DEL
     }
     this._putRecord(record, cb)
   }
