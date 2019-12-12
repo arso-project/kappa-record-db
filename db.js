@@ -73,6 +73,8 @@ class Database extends EventEmitter {
     this.key = opts.key
     if (!this.key) this.key = crypto.randomBytes(32)
 
+    this._validate = defaultTrue(opts.validate)
+
     this.encoding = Record
     this.schemas = opts.schemas || new SchemaStore({ key: this.key })
     this.lvl = opts.db || memdb()
@@ -176,10 +178,19 @@ class Database extends EventEmitter {
     return this.kappa.view
   }
 
-  put (record, cb) {
+  put (record, opts, cb) {
+    if (typeof opts === 'function') return this.put(record, {}, opts)
     record.op = RecordEncoding.Type.PUT
     record.schema = this.schemas.resolveName(record.schema)
-    if (!this.schemas.validate(record)) return cb(this.schemas.error)
+
+    let validate = false
+    if (this._validate) validate = true
+    if (typeof opts.validate !== 'undefined') validate = !!opts.validate
+
+    if (validate) {
+      if (!this.schemas.validate(record)) return cb(this.schemas.error)
+    }
+
     if (!record.id) record.id = uuid()
     this._putRecord(record, err => err ? cb(err) : cb(null, record.id))
   }
@@ -300,4 +311,9 @@ class Database extends EventEmitter {
     }
     this.loadRecord(key, seq, cb)
   }
+}
+
+function defaultTrue (val) {
+  if (typeof val === 'undefined') return true
+  return !!val
 }
