@@ -93,6 +93,10 @@ class Database extends EventEmitter {
     this._opened = false
   }
 
+  close (cb) {
+    this.kappa.close(cb)
+  }
+
   useRecordView (name, createView, opts) {
     const self = this
     const viewdb = sub(this.lvl, 'view.' + name)
