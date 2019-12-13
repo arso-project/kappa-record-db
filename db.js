@@ -131,6 +131,10 @@ class Database extends EventEmitter {
     return this.localWriter().key
   }
 
+  get view () {
+    return this.kappa.view
+  }
+
   localWriter () {
     const feed = this.corestore.get({
       default: true,
@@ -176,6 +180,35 @@ class Database extends EventEmitter {
       op: Record.DEL
     }
     this._putRecord(record, cb)
+  }
+
+  // TODO: Make this actual batching ops to the underyling feed.
+  batch (ops, cb) {
+    let pending = 1
+    let ids = []
+    let errs = []
+    for (let op of ops) {
+      if (op.op === 'put') ++pending && this.put(op, done)
+      if (op.op === 'del') ++pending && this.put(op, done)
+    }
+    done()
+    function done (err, id) {
+      if (err) errs.push(err)
+      if (id) ids.push(id)
+      if (--pending === 0) {
+        if (errs.length) {
+          err = new Error('Batch failed')
+          err.errors = errs
+          cb(err)
+        } else {
+          cb(null, ids)
+        }
+      }
+    }
+  }
+
+  // TODO.
+  createBatchStream () {
   }
 
   _putRecord (record, cb) {
