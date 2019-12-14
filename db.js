@@ -5,7 +5,7 @@ const memdb = require('level-mem')
 const collect = require('stream-collector')
 const crypto = require('crypto')
 const levelBaseView = require('kappa-view')
-const { Transform } = require('stream')
+const { Transform, PassThrough } = require('stream')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
@@ -324,21 +324,30 @@ class Database extends EventEmitter {
     this.loadRecord(key, seq, cb)
   }
 
-  query (name, args, opts, cb) {
+  createQueryStream (name, args, opts = {}) {
+    if (typeof opts.load === 'undefined') opts.load = true
+
+    let proxy = new PassThrough({ objectMode: true })
     if (!this.view[name] || !this.view[name].query) {
-      return finish(new Error('Invalid query name: ' + name))
+      proxy.destroy(new Error('Invalid query name: ' + name))
+      return proxy
     }
-    if (cb && opts.live) return cb(new Error('Cannot use live mode with callbacks'))
-    let stream
+
     const qs = this.view[name].query(args, opts)
-    if (opts.load) stream = qs.pipe(this.createLoadStream())
-    else stream = qs
-    return finish()
-    function finish (err) {
-      if (cb && err) return cb(err)
-      if (err) stream.destroy(err)
-      if (cb) return collect(stream, cb)
-      return stream
+    if (opts.load) qs.pipe(this.createLoadStream()).pipe(proxy)
+    else qs.pipe(proxy)
+    return proxy
+  }
+
+  query (name, args, opts, cb) {
+    const qs = this.createQueryStream(name, args, opts)
+    if (cb && opts.live) {
+      return cb(new Error('Cannot use live mode with callbacks'))
+    }
+    if (cb) {
+      return collect(qs, cb)
+    } else {
+      return qs
     }
   }
 }
