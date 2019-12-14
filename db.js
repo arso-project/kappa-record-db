@@ -5,6 +5,7 @@ const memdb = require('level-mem')
 const collect = require('stream-collector')
 const crypto = require('crypto')
 const levelBaseView = require('kappa-view')
+const { Transform } = require('stream')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
@@ -97,17 +98,16 @@ class Database extends EventEmitter {
     this.kappa.close(cb)
   }
 
+  use (...args) {
+    return this.useRecordView(...args)
+  }
+
   useRecordView (name, createView, opts) {
     const self = this
     const viewdb = sub(this.lvl, 'view.' + name)
-    // const statedb = sub(this.lvl, 'state.' + name)
     const view = levelBaseView(viewdb, function (db) {
       return withDecodedRecords(createView(db, self, opts))
     })
-    // const source = kappaCorestoreSource({
-    //   store: this.corestore,
-    //   db: statedb
-    // })
     this.kappa.use(name, this.indexer.source(), view)
   }
 
@@ -117,8 +117,12 @@ class Database extends EventEmitter {
 
   ready (cb) {
     this.corestore.ready(() => {
-      this.localWriter().ready(() => {
-        this.indexer.add(this.localWriter())
+      this._localWriter = this.corestore.get({
+        default: true,
+        _name: 'localwriter'
+      })
+      this._localWriter.ready(() => {
+        this.indexer.add(this._localWriter)
         this._initSchemas(() => {
           this._opened = true
           cb()
@@ -136,11 +140,7 @@ class Database extends EventEmitter {
   }
 
   localWriter () {
-    const feed = this.corestore.get({
-      default: true,
-      _name: 'localwriter'
-    })
-    return feed
+    return this._localWriter
   }
 
   _initSchemas (cb) {
@@ -280,8 +280,7 @@ class Database extends EventEmitter {
     this.put(record, cb)
   }
 
-  loadStream (stream, cb) {
-    if (typeof stream === 'function') return this.loadStream(null, stream)
+  createLoadStream () {
     const self = this
     const transform = through(function (req, enc, next) {
       self.loadRecord(req.key, req.seq, (err, record) => {
@@ -293,6 +292,12 @@ class Database extends EventEmitter {
         next()
       })
     })
+    return transform
+  }
+
+  loadStream (stream, cb) {
+    if (typeof stream === 'function') return this.loadStream(null, stream)
+    const transform = this.createLoadStream()
     if (stream) stream.pipe(transform)
     if (cb) return collect(transform, cb)
     else return transform
@@ -317,6 +322,24 @@ class Database extends EventEmitter {
       seq = link.seq
     }
     this.loadRecord(key, seq, cb)
+  }
+
+  query (name, args, opts, cb) {
+    if (!this.view[name] || !this.view[name].query) {
+      return finish(new Error('Invalid query name: ' + name))
+    }
+    if (cb && opts.live) return cb(new Error('Cannot use live mode with callbacks'))
+    let stream
+    const qs = this.view[name].query(args, opts)
+    if (opts.load) stream = qs.pipe(this.createLoadStream())
+    else stream = qs
+    return finish()
+    function finish (err) {
+      if (cb && err) return cb(err)
+      if (err) stream.destroy(err)
+      if (cb) return collect(stream, cb)
+      return stream
+    }
   }
 }
 

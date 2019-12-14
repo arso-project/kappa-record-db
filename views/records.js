@@ -28,6 +28,10 @@ module.exports = function recordView (lvl, db) {
         })
       },
 
+      query (kappa, req) {
+        return this.view.get(req)
+      },
+
       get (kappa, req) {
         const self = kappa.view.records
         if (!req) return self.all()

@@ -89,12 +89,14 @@ tape('replication', async t => {
     cb => setTimeout(cb, 100),
     cb => {
       db2.kappa.ready('kv', () => {
-        collect(db.loadStream(db.api.records.get({ schema: 'group' }), (err, records) => {
+        // collect(db.loadStream(db.api.records.get({ schema: 'group' }), (err, records) => {
+
+        db2.query('records', { schema: 'group' }, { load: true }, (err, records) => {
           t.error(err)
           t.equal(records.length, 1)
           t.equal(records[0].value.name, 'stories')
           t.end()
-        }))
+        })
       })
     }
   ])
