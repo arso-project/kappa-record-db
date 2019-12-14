@@ -2,11 +2,13 @@
 
 A peer-to-peer database built on [hypercores](https://github.com/mafintosh/hypercore) and [kappa-core@experimental](https://github.com/Frando/kappa-core#experimental).
 
+*Note: Not yet stable, work in progress!*
+
 * Index a set of hypercores efficiently into materialized-view style secondary indexes
 * A simple and universal *record* data model: Each record has an *id*, a *schema*, and a *value*. 
+* Is developed for [Sonar](https://github.com/arso-project/sonar) which adds full-text search, binary assets, an HTTP API, a CLI and a UI.
 
 Basicaly this means: put in json, optionally specify its JSON schema (for validation and uniformness), and sync effortlessly with other peers. 
-
 A *database* refers to a particular set of feeds. The current model starts with a single feed, and that feed then can add other feeds to the set of authorized sources. An second model, where all feeds that swarm under a shared key are considered authorized, will be added soon.
 
 Internally, the database uses [unordered-materialized-kv](https://github.com/digidem/unordered-materialized-kv/) to have a shared notion of the latest versions of a record.
