@@ -22,6 +22,7 @@ const createIndexview = require('./views/indexes')
 module.exports = function (opts) {
   return new Database(opts)
 }
+module.exports.uuid = uuid
 
 function withDecodedRecords (view) {
   return {
