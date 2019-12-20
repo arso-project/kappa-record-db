@@ -1,6 +1,6 @@
 {
   "name": "kappa-record-db",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "",
   "main": "db.js",
   "keywords": [],
