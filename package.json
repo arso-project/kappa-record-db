@@ -18,7 +18,7 @@
     "hypercore": "^8.3.0",
     "hypercore-protocol": "^7.7.1",
     "kappa-core": "github:Frando/kappa-core#exp-0.1.1",
-    "kappa-sparse-indexer": "^0.2.1",
+    "kappa-sparse-indexer": "^0.3.0",
     "kappa-view-level": "^2.1.0",
     "level-live": "^1.0.1",
     "level-mem": "^5.0.1",

@@ -2,6 +2,7 @@ const through = require('through2')
 const keyEncoding = require('charwise')
 const { opsForRecords } = require('./helpers')
 const Live = require('level-live')
+const debug = require('debug')('view:records')
 // const collect = require('stream-collector')
 
 const INDEXES = {
@@ -11,28 +12,21 @@ const INDEXES = {
 
 module.exports = function recordView (lvl, db) {
   return {
-    name: 'records',
     map (msgs, next) {
       opsForRecords(db, msgs, putOps, (err, ops) => {
+        debug('map: msgs %s, ops %s err %s', msgs.length, ops.length, err)
         if (err) return next(err)
         lvl.batch(ops, next)
       })
     },
 
     api: {
-      all (kappa, cb) {
-        return query(lvl, {
-          gte: ['is'],
-          lte: ['is', undefined],
-          keyEncoding
-        })
-      },
-
       query (kappa, req) {
         return this.view.get(req)
       },
 
       get (kappa, req) {
+        debug('get', req)
         const self = kappa.view.records
         if (!req) return self.all()
         if (typeof req === 'string') req = { id: req }
@@ -45,6 +39,13 @@ module.exports = function recordView (lvl, db) {
 
         if (key) rs = rs.pipe(filterSource(key, seq))
         return rs
+      },
+
+      all (kappa, cb) {
+        return query(lvl, {
+          gte: ['is'],
+          lte: ['is', undefined]
+        })
       },
 
       bySchema (kappa, schema, opts) {
@@ -79,6 +80,7 @@ module.exports = function recordView (lvl, db) {
 }
 
 function query (db, opts) {
+  debug('query', opts)
   opts.keyEncoding = keyEncoding
   let rs
   if (opts.live) {

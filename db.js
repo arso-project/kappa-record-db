@@ -4,15 +4,15 @@ const sub = require('subleveldown')
 const memdb = require('level-mem')
 const collect = require('stream-collector')
 const crypto = require('crypto')
-const levelBaseView = require('kappa-view')
 const { Transform, PassThrough } = require('stream')
+const debug = require('debug')('db')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
 const Corestore = require('corestore')
 
 const { uuid, through } = require('./lib/util')
-const SchemaStore = require('./lib/schema')
+const Schema = require('./lib/schema')
 const Record = require('./lib/record')
 
 const createKvView = require('./views/kv')
@@ -24,41 +24,41 @@ module.exports = function (opts) {
 }
 module.exports.uuid = uuid
 
-function withDecodedRecords (view) {
-  return {
-    ...view,
-    map (messages, cb) {
-      messages = messages.map(msg => {
-        try {
-          return Record.decodeValue(msg)
-        } catch (err) {
-          return null
-        }
-      }).filter(m => m)
-      view.map(messages, cb)
-    }
-  }
-}
-
 class Database extends EventEmitter {
   constructor (opts = {}) {
     super()
     const self = this
     this.opts = opts
     this.key = opts.key
+
+    this._name = opts.name
+
     if (!this.key) this.key = crypto.randomBytes(32)
 
     this._validate = defaultTrue(opts.validate)
 
     this.encoding = Record
-    this.schemas = opts.schemas || new SchemaStore({ key: this.key })
+    this.schemas = opts.schemas || new Schema({ key: this.key })
     this.lvl = opts.db || memdb()
 
     this.corestore = opts.corestore || new Corestore(opts.storage || ram)
 
-    this.indexer = new Indexer(sub(this.lvl, 'indexer'))
+    this.indexer = new Indexer({
+      db: sub(this.lvl, 'indexer'),
+      transform (msgs, next) {
+        let res = []
+        load()
+        function load (err, record) {
+          if (!err && record) res.push(record)
+          let msg = msgs.pop()
+          if (!msg) return next(res)
+          process.nextTick(() => self.loadRecord(msg.key, msg.seq, load))
+        }
+      }
+    })
 
     this.kappa = new Kappa()
+    this.kappa.pause()
 
     this.useRecordView('kv', createKvView)
     this.useRecordView('records', createRecordsView)
@@ -71,8 +71,10 @@ class Database extends EventEmitter {
       //   next(msgs.filter(msg => msg.schema === 'core/schema'))
       // },
       map (msgs, next) {
-        msgs = msgs.filter(msg => msg.schema === 'core/schema')
-        msgs.forEach(msg => self.schemas.put(msg.id, msg.value))
+        for (const msg of msgs) {
+          if (msg.schema === 'core/schema') self.schemas.put(msg.value)
+          if (!self.schemas.has(msg)) self.schemas.fake(msg)
+        }
         next()
       }
     }))
@@ -106,9 +108,7 @@ class Database extends EventEmitter {
   useRecordView (name, createView, opts) {
     const self = this
     const viewdb = sub(this.lvl, 'view.' + name)
-    const view = levelBaseView(viewdb, function (db) {
-      return withDecodedRecords(createView(db, self, opts))
-    })
+    const view = createView(viewdb, self, opts)
     this.kappa.use(name, this.indexer.source(), view)
   }
 
@@ -118,13 +118,10 @@ class Database extends EventEmitter {
 
   ready (cb) {
     this.corestore.ready(() => {
-      this._localWriter = this.corestore.get({
-        default: true,
-        _name: 'localwriter'
-      })
-      this._localWriter.ready(() => {
-        this.indexer.add(this._localWriter)
+      this._initLocalWriter(err => {
+        if (err) return cb(err)
         this._initSchemas(() => {
+          this.kappa.resume()
           this._opened = true
           cb()
         })
@@ -144,11 +141,31 @@ class Database extends EventEmitter {
     return this._localWriter
   }
 
+  _initLocalWriter (cb) {
+    const self = this
+    this._localWriter = this.corestore.get({
+      default: true,
+      _name: 'localwriter'
+    })
+
+    this._localWriter.ready(() => {
+      this.indexer.add(this._localWriter)
+      if (!this._localWriter.length) onfirstinit(cb)
+      else cb()
+    })
+
+    function onfirstinit (cb) {
+      const sourceOpts = {}
+      if (self._name) sourceOpts.name = self._name
+      self.putSource(self._localWriter.key, sourceOpts, cb)
+    }
+  }
+
   _initSchemas (cb) {
     const qs = this.api.records.get({ schema: 'core/schema' })
     this.loadStream(qs, (err, schemas) => {
       if (err) return cb(err)
-      schemas.forEach(msg => this.schemas.put(msg.id, msg.value))
+      schemas.forEach(msg => this.schemas.put(msg.value))
       cb()
     })
   }
@@ -165,6 +182,8 @@ class Database extends EventEmitter {
     let validate = false
     if (this._validate) validate = true
     if (typeof opts.validate !== 'undefined') validate = !!opts.validate
+
+    debug(`put: id %s schema %s value %s`, record.id || '<>', record.schema, JSON.stringify(record.value).substring(0, 40))
 
     if (validate) {
       if (!this.schemas.validate(record)) return cb(this.schemas.error)
@@ -247,14 +266,14 @@ class Database extends EventEmitter {
     })
   }
 
+  // TODO: Deduplicate / error if exists?
   putSchema (name, schema, cb) {
     this.ready(() => {
-      name = this.schemas.resolveName(name, this.key)
-      if (!this.schemas.put(name, schema)) return cb(this.schemas.error)
+      schema = this.schemas.parseSchema(name, schema)
+      if (!schema) return cb(this.schemas.error)
       const record = {
         schema: 'core/schema',
-        value: schema,
-        id: name
+        value: schema
       }
       this.put(record, cb)
     })
@@ -268,14 +287,17 @@ class Database extends EventEmitter {
     return this.schemas.list()
   }
 
-  putSource (key, cb) {
+  putSource (key, opts, cb) {
+    if (typeof opts === 'function') return this.putSource(key, {}, opts)
     if (Buffer.isBuffer(key)) key = key.toString('hex')
     const record = {
       schema: 'core/source',
       id: key,
       value: {
         type: 'kappa-records',
-        key
+        key,
+        name: opts.source,
+        description: opts.description
       }
     }
     this.put(record, cb)
