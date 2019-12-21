@@ -16,7 +16,9 @@ module.exports = function recordView (lvl, db) {
       opsForRecords(db, msgs, putOps, (err, ops) => {
         debug('map: msgs %s, ops %s err %s', msgs.length, ops.length, err)
         if (err) return next(err)
-        lvl.batch(ops, next)
+        lvl.batch(ops, () => {
+          next()
+        })
       })
     },
 
@@ -26,8 +28,8 @@ module.exports = function recordView (lvl, db) {
       },
 
       get (kappa, req) {
-        debug('get', req)
-        const self = kappa.view.records
+        // debug('get', req)
+        const self = this.view
         if (!req) return self.all()
         if (typeof req === 'string') req = { id: req }
         let { schema, id, key, seq } = req
@@ -80,15 +82,17 @@ module.exports = function recordView (lvl, db) {
 }
 
 function query (db, opts) {
-  debug('query', opts)
+  // debug('query', opts)
   opts.keyEncoding = keyEncoding
+  const transform = parseRow()
   let rs
   if (opts.live) {
     rs = new Live(db, opts)
+    rs.once('sync', () => transform.emit('sync'))
   } else {
     rs = db.createReadStream(opts)
   }
-  return rs.pipe(transform())
+  return rs.pipe(transform)
 }
 
 function validate (msg) {
@@ -111,11 +115,12 @@ function putOps (msg, db) {
   return ops
 }
 
-function transform () {
+function parseRow () {
   return through.obj(function (row, enc, next) {
     const { key, value: seq, type } = row
     const idx = key.shift()
     const index = INDEXES[idx]
+    if (!index) return next()
     const record = { seq: Number(seq), type }
     for (let i = 0; i < key.length; i++) {
       record[index[i]] = key[i]

@@ -3,9 +3,10 @@ const ram = require('random-access-memory')
 const sub = require('subleveldown')
 const memdb = require('level-mem')
 const collect = require('stream-collector')
-const crypto = require('crypto')
-const { Transform, PassThrough } = require('stream')
+const { PassThrough, Writable } = require('stream')
 const debug = require('debug')('db')
+const inspect = require('inspect-custom-symbol')
+const pretty = require('pretty-hash')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
@@ -29,72 +30,55 @@ class Database extends EventEmitter {
     super()
     const self = this
     this.opts = opts
-    this.key = opts.key
 
     this._name = opts.name
-
-    if (!this.key) this.key = crypto.randomBytes(32)
-
     this._validate = defaultTrue(opts.validate)
 
     this.encoding = Record
-    this.schemas = opts.schemas || new Schema({ key: this.key })
     this.lvl = opts.db || memdb()
 
     this.corestore = opts.corestore || new Corestore(opts.storage || ram)
+    this._feeds = {}
 
     this.indexer = new Indexer({
       db: sub(this.lvl, 'indexer'),
-      transform (msgs, next) {
-        let res = []
-        load()
-        function load (err, record) {
-          if (!err && record) res.push(record)
-          let msg = msgs.pop()
-          if (!msg) return next(res)
-          process.nextTick(() => self.loadRecord(msg.key, msg.seq, load))
-        }
+      loadValue (key, seq, cb) {
+        self.loadRecord(key, seq, cb)
       }
     })
 
     this.kappa = new Kappa()
     this.kappa.pause()
 
-    this.useRecordView('kv', createKvView)
-    this.useRecordView('records', createRecordsView)
-    this.useRecordView('indexes', createIndexview)
+    this.use('kv', createKvView)
+    this.use('records', createRecordsView)
+    this.use('indexes', createIndexview)
 
-    this.useRecordView('schema', () => ({
-      // TODO: Moving the filterering from map to filter breaks everytihng.
-      // The values are not yet decoded there? This should not be the case.
-      // filter (msgs, next) {
-      //   next(msgs.filter(msg => msg.schema === 'core/schema'))
-      // },
-      map (msgs, next) {
-        for (const msg of msgs) {
-          if (msg.schema === 'core/schema') self.schemas.put(msg.value)
-          if (!self.schemas.has(msg)) self.schemas.fake(msg)
-        }
-        next()
-      }
-    }))
+    this.opened = false
+  }
 
-    this.useRecordView('source', () => ({
-      // filter (msgs, next) {
-      //   next(msgs.filter(msg => msg.schema === 'core/source'))
-      // },
-      map (msgs, next) {
-        msgs = msgs.filter(msg => msg.schema === 'core/source')
-        msgs.forEach(msg => {
-          const key = msg.value.key
-          const feed = self.corestore.get({ key, parent: self.key })
-          self.indexer.add(feed, { scan: true })
-        })
-        next()
-      }
-    }))
+  get key () {
+    return this._primaryFeed && this._primaryFeed.key
+  }
 
-    this._opened = false
+  get discoveryKey () {
+    return this._primaryFeed && this._primaryFeed.discoveryKey
+  }
+
+  get localKey () {
+    return this._localWriter && this._localWriter.key
+  }
+
+  get view () {
+    return this.kappa.view
+  }
+
+  get api () {
+    return this.kappa.view
+  }
+
+  localWriter () {
+    return this._localWriter
   }
 
   close (cb) {
@@ -117,42 +101,24 @@ class Database extends EventEmitter {
   }
 
   ready (cb) {
+    const self = this
     this.corestore.ready(() => {
-      this._initLocalWriter(err => {
-        if (err) return cb(err)
+      this._initPrimaryFeeds(() => {
+        this.schemas = this.opts.schemas || new Schema({ key: this.key })
         this._initSchemas(() => {
-          this.kappa.resume()
-          this._opened = true
-          cb()
+          this._initSources(() => {
+            if (!this._localWriter.length) onfirstinit(finish)
+            else finish()
+          })
         })
       })
     })
-  }
 
-  get localKey () {
-    return this.localWriter().key
-  }
-
-  get view () {
-    return this.kappa.view
-  }
-
-  localWriter () {
-    return this._localWriter
-  }
-
-  _initLocalWriter (cb) {
-    const self = this
-    this._localWriter = this.corestore.get({
-      default: true,
-      _name: 'localwriter'
-    })
-
-    this._localWriter.ready(() => {
-      this.indexer.add(this._localWriter)
-      if (!this._localWriter.length) onfirstinit(cb)
-      else cb()
-    })
+    function finish () {
+      self.kappa.resume()
+      self.opened = true
+      cb()
+    }
 
     function onfirstinit (cb) {
       const sourceOpts = {}
@@ -161,20 +127,49 @@ class Database extends EventEmitter {
     }
   }
 
-  _initSchemas (cb) {
-    const qs = this.api.records.get({ schema: 'core/schema' })
-    this.loadStream(qs, (err, schemas) => {
-      if (err) return cb(err)
-      schemas.forEach(msg => this.schemas.put(msg.value))
-      cb()
+  _initPrimaryFeeds (cb) {
+    const self = this
+
+    if (this.opts.key) {
+      this._primaryFeed = this.feed(this.opts.key)
+    } else {
+      this._primaryFeed = this.feed(null, { default: true })
+    }
+
+    this._primaryFeed.ready(() => {
+      if (this._primaryFeed.writable) {
+        this._localWriter = this._primaryFeed
+      } else {
+        this._localWriter = this.feed(null, { default: true })
+      }
+      this._localWriter.ready(() => {
+        self.indexer.add(self._primaryFeed)
+        self.indexer.add(self._localWriter)
+        cb()
+      })
     })
   }
 
-  get api () {
-    return this.kappa.view
+  _initSchemas (cb) {
+    const qs = this.createQueryStream('records', { schema: 'core/schema', live: true })
+    qs.once('sync', cb)
+    qs.pipe(sink((record, next) => {
+      this.schemas.put(record.value)
+      next()
+    }))
   }
 
-  put (record, opts, cb) {
+  _initSources (cb) {
+    const qs = this.createQueryStream('records', { schema: 'core/source', live: true })
+    qs.once('sync', cb)
+    qs.pipe(sink((record, next) => {
+      const feed = this.feed(record.value.key)
+      this.indexer.add(feed)
+      next()
+    }))
+  }
+
+  put (record, opts = {}, cb) {
     if (typeof opts === 'function') return this.put(record, {}, opts)
     record.op = Record.PUT
     record.schema = this.schemas.resolveName(record.schema)
@@ -246,19 +241,12 @@ class Database extends EventEmitter {
     this.loadStream(this.kappa.view.records.get(req), cb)
   }
 
-  // get (id, cb) {
-  //   this.kappa.api.kv.getLinks(id, (err, links) => {
-  //     if (err) cb(err)
-  //     else this.loadAll(links, cb)
-  //   })
-  // }
-
   getLinks (record, cb) {
     this.kappa.view.kv.getLinks(record, cb)
   }
 
   loadRecord (key, seq, cb) {
-    const feed = this.corestore.get({ key })
+    const feed = this.feed(key)
     feed.get(seq, (err, record) => {
       record = Record.decode(record, { key, seq })
       if (err) return cb(err)
@@ -266,15 +254,24 @@ class Database extends EventEmitter {
     })
   }
 
+  feed (key, opts = {}) {
+    if (this._feeds[key]) return this._feeds[key]
+    opts.valueEncoding = Record
+    opts.parent = this.key
+    this._feeds[key] = this.corestore.get({ key, parent: this.key, ...opts })
+    return this._feeds[key]
+  }
+
   // TODO: Deduplicate / error if exists?
   putSchema (name, schema, cb) {
     this.ready(() => {
-      schema = this.schemas.parseSchema(name, schema)
-      if (!schema) return cb(this.schemas.error)
+      const value = this.schemas.parseSchema(name, schema)
+      if (!value) return cb(this.schemas.error)
       const record = {
         schema: 'core/schema',
-        value: schema
+        value
       }
+      this.schemas.put(value)
       this.put(record, cb)
     })
   }
@@ -287,7 +284,7 @@ class Database extends EventEmitter {
     return this.schemas.list()
   }
 
-  putSource (key, opts, cb) {
+  putSource (key, opts = {}, cb) {
     if (typeof opts === 'function') return this.putSource(key, {}, opts)
     if (Buffer.isBuffer(key)) key = key.toString('hex')
     const record = {
@@ -296,7 +293,7 @@ class Database extends EventEmitter {
       value: {
         type: 'kappa-records',
         key,
-        name: opts.source,
+        name: opts.name,
         description: opts.description
       }
     }
@@ -326,17 +323,6 @@ class Database extends EventEmitter {
     else return transform
   }
 
-  // loadAll (links, cb) {
-  //   let pending = links.length
-  //   let res = []
-  //   let errs = []
-  //   links.forEach(link => this.loadLink(link, (err, link) => {
-  //     if (err) errs.push(err)
-  //     else res.push(link)
-  //     if (--pending === 0) cb(errs.length ? errs : null, links)
-  //   }))
-  // }
-
   loadLink (link, cb) {
     if (typeof link === 'string') {
       var [key, seq] = link.split('@')
@@ -357,12 +343,17 @@ class Database extends EventEmitter {
     }
 
     const qs = this.view[name].query(args, opts)
-    if (opts.load) qs.pipe(this.createLoadStream()).pipe(proxy)
+    qs.once('sync', () => proxy.emit('sync'))
+    if (opts.load !== false) qs.pipe(this.createLoadStream()).pipe(proxy)
     else qs.pipe(proxy)
     return proxy
   }
 
-  query (name, args, opts, cb) {
+  query (name, args, opts = {}, cb) {
+    if (typeof opts === 'function') {
+      cb = opts
+      opts = {}
+    }
     const qs = this.createQueryStream(name, args, opts)
     if (cb && opts.live) {
       return cb(new Error('Cannot use live mode with callbacks'))
@@ -373,9 +364,48 @@ class Database extends EventEmitter {
       return qs
     }
   }
+
+  [inspect] (depth, opts) {
+    const { stylize } = opts
+    var indent = ''
+    if (typeof opts.indentationLvl === 'number') {
+      while (indent.length < opts.indentationLvl) indent += ' '
+    }
+
+    return 'Database(\n' +
+          indent + '  key         : ' + stylize((this.key && pretty(this.key)), 'string') + '\n' +
+          indent + '  discoveryKey: ' + stylize((this.discoveryKey && pretty(this.discoveryKey)), 'string') + '\n' +
+          indent + '  primaryFeed : ' + fmtFeed(this._primaryFeed) + '\n' +
+          indent + '  localFeed   : ' + fmtFeed(this._localWriter) + '\n' +
+          indent + '  feeds:      : ' + Object.values(this.indexer._feeds).length + '\n' +
+          indent + '  opened      : ' + stylize(this.opened, 'boolean') + '\n' +
+          indent + '  name        : ' + stylize(this._name, 'string') + '\n' +
+          // indent + '  peers: ' + stylize(this.peers.length, 'number') + '\n' +
+          indent + ')'
+
+    function fmtFeed (feed) {
+      if (!feed) return '(undefined)'
+      return stylize(pretty(feed.key), 'string') + ' @ ' + feed.length + ' ' +
+        (feed.writable ? '*' : '')
+    }
+  }
 }
 
 function defaultTrue (val) {
   if (typeof val === 'undefined') return true
   return !!val
+}
+
+function formatKey (key) {
+  if (Buffer.isBuffer(key)) key = key.toString('hex')
+  return key.substring(0, 6) + '..'
+}
+
+function sink (fn) {
+  return new Writable({
+    objectMode: true,
+    write (msg, enc, next) {
+      fn(msg, next)
+    }
+  })
 }
