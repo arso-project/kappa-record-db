@@ -25,13 +25,13 @@ const DOC1 = {
   value: { title: 'hello', body: 'world', tags: ['red'] }
 }
 
-tape('replication', async t => {
-  const db = new Database()
+tape.only('replication', async t => {
+  const db = new Database({ name: 'db1', alias: 'w1' })
   let db2, id1, docIds
   await runAll([
     cb => db.ready(cb),
     cb => {
-      db2 = new Database({ key: db.key })
+      db2 = new Database({ key: db.key, name: 'db1-2', alias: 'w2' })
       cb()
     },
     cb => db2.ready(cb),
@@ -80,7 +80,8 @@ tape('replication', async t => {
     cb => {
       db.putSource(db2.localKey, cb)
     },
-    cb => setTimeout(cb, 100),
+    cb => setTimeout(cb, 500),
+    cb => db.kappa.ready('records', cb),
     cb => {
       console.log('After putSource')
       console.log('DB', db)

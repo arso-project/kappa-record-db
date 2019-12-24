@@ -7,6 +7,7 @@ const { PassThrough, Writable } = require('stream')
 const debug = require('debug')('db')
 const inspect = require('inspect-custom-symbol')
 const pretty = require('pretty-hash')
+const pump = require('pump')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
@@ -32,6 +33,8 @@ class Database extends EventEmitter {
     this.opts = opts
 
     this._name = opts.name
+    this._alias = opts.alias
+
     this._validate = defaultTrue(opts.validate)
 
     this.encoding = Record
@@ -122,7 +125,7 @@ class Database extends EventEmitter {
 
     function onfirstinit (cb) {
       const sourceOpts = {}
-      if (self._name) sourceOpts.name = self._name
+      if (self._alias) sourceOpts.name = self._alias
       self.putSource(self._localWriter.key, sourceOpts, cb)
     }
   }
@@ -163,8 +166,10 @@ class Database extends EventEmitter {
     const qs = this.createQueryStream('records', { schema: 'core/source', live: true })
     qs.once('sync', cb)
     qs.pipe(sink((record, next) => {
-      const feed = this.feed(record.value.key)
-      this.indexer.add(feed)
+      const { alias, key, type } = record.value
+      if (type !== 'kappa-records') return next()
+      const feed = this.feed(key)
+      this.indexer.add(feed, { scan: true, alias })
       next()
     }))
   }
@@ -255,10 +260,12 @@ class Database extends EventEmitter {
   }
 
   feed (key, opts = {}) {
+    if (Buffer.isBuffer(key)) key = key.toString('hex')
     if (this._feeds[key]) return this._feeds[key]
+    opts.key = key
     opts.valueEncoding = Record
-    opts.parent = this.key
-    this._feeds[key] = this.corestore.get({ key, parent: this.key, ...opts })
+    // opts.parent = this.key
+    this._feeds[key] = this.corestore.get(opts)
     return this._feeds[key]
   }
 
@@ -285,6 +292,7 @@ class Database extends EventEmitter {
   }
 
   putSource (key, opts = {}, cb) {
+    // opts should/can include: { alias }
     if (typeof opts === 'function') return this.putSource(key, {}, opts)
     if (Buffer.isBuffer(key)) key = key.toString('hex')
     const record = {
@@ -293,8 +301,7 @@ class Database extends EventEmitter {
       value: {
         type: 'kappa-records',
         key,
-        name: opts.name,
-        description: opts.description
+        ...opts
       }
     }
     this.put(record, cb)
@@ -303,6 +310,9 @@ class Database extends EventEmitter {
   createLoadStream () {
     const self = this
     const transform = through(function (req, enc, next) {
+      // TODO: This is too silent, this should not happen
+      // or there should be a defined way what to do instead.
+      if (!req.key || !req.seq) return next()
       self.loadRecord(req.key, req.seq, (err, record) => {
         if (err) this.emit('error', err)
         if (record) {
@@ -344,8 +354,9 @@ class Database extends EventEmitter {
 
     const qs = this.view[name].query(args, opts)
     qs.once('sync', () => proxy.emit('sync'))
-    if (opts.load !== false) qs.pipe(this.createLoadStream()).pipe(proxy)
-    else qs.pipe(proxy)
+
+    if (opts.load !== false) pump(qs, this.createLoadStream(), proxy)
+    else pump(qs, proxy)
     return proxy
   }
 
