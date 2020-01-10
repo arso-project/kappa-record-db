@@ -1,4 +1,5 @@
 const through = require('through2')
+const pump = require('pump')
 
 const { opsForRecords } = require('./helpers')
 
@@ -10,6 +11,10 @@ module.exports = function indexedView (lvl, db) {
   return {
     name: 'indexes',
     map (msgs, next) {
+      let _next = next
+      next = (...args) => {
+        _next(...args)
+      }
       opsForRecords(db, msgs, mapToIndex, (err, ops) => {
         if (err) return next(err)
         // console.log('OPS', ops)

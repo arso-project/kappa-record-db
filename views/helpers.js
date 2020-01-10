@@ -1,21 +1,20 @@
-module.exports = { opsForRecord, opsForRecords }
+module.exports = { opsForRecords }
 
 function opsForRecords (db, records, map, cb) {
   let pending = records.length
   const ops = []
-  records.forEach(record => opsForRecord(db, record, map, done))
+  records.forEach(record => collectOps(db, record, map, done))
   function done (err, curOps) {
     if (!err) ops.push(...curOps)
     if (--pending === 0) cb(null, ops)
   }
 }
 
-function opsForRecord (db, record, map, cb) {
+function collectOps (db, record, map, cb) {
   db.api.kv.isLinked(record, (err, isOutdated) => {
-    // linked records are outdated/overwritten, nothing to do here.
-    if (err || isOutdated) return cb(err, [])
+    if (err || isOutdated) return cb(null, [])
     // check if we have to delete other records.
-    delOps(db, record, map, (err, ops = []) => {
+    collectDeletes(db, record, map, (err, ops = []) => {
       if (err) return cb(err)
       ops = mapToDel(ops)
       // finally, add the put itself.
@@ -37,17 +36,13 @@ function mapToDel (ops) {
   })
 }
 
-function delOps (db, record, map, cb) {
+function collectDeletes (db, record, map, cb) {
   let ops = []
   if (record.delete) {
     ops = map(record, db)
   }
 
-  if (!record.links || !record.links.length) {
-    return cb(null, ops)
-  }
-
-  let pending = record.links.length
+  let pending = record.links.length + 1
   record.links.forEach(link => {
     db.loadLink(link, (err, record) => {
       if (err || !record) return done()
@@ -55,7 +50,12 @@ function delOps (db, record, map, cb) {
       done()
     })
   })
+  done()
+
   function done () {
-    if (--pending === 0) cb(null, ops)
+    if (--pending === 0) {
+      ops = mapToDel(ops)
+      cb(null, ops)
+    }
   }
 }
