@@ -247,7 +247,7 @@ class Database extends EventEmitter {
       cb = opts
       opts = {}
     }
-    this.loadStream(this.query('record', req, opts), cb)
+    this.loadStream(this.query('records', req, opts), cb)
   }
 
   getLinks (record, cb) {

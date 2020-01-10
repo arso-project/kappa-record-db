@@ -69,7 +69,16 @@ tape('basics', async t => {
           name: 'stories',
           docs: docIds
         }
-      }, cb)
+      }, (err, id) => {
+        t.error(err)
+        t.ok(id)
+        db.get({ id }, { waitForSync: true }, (err, res) => {
+          t.error(err)
+          t.equal(res.length, 1)
+          t.equal(res[0].value.name, 'stories')
+          cb()
+        })
+      })
     },
     cb => setTimeout(() => cb(), 200),
     cb => {
