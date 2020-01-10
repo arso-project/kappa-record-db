@@ -55,7 +55,7 @@ class Database extends EventEmitter {
 
     this.use('kv', createKvView)
     this.use('records', createRecordsView)
-    this.use('indexes', createIndexview)
+    this.use('index', createIndexview)
 
     this.opened = false
   }
@@ -154,7 +154,7 @@ class Database extends EventEmitter {
   }
 
   _initSchemas (cb) {
-    const qs = this.createQueryStream('records', { schema: 'core/schema', live: true })
+    const qs = this.createQueryStream('records', { schema: 'core/schema' }, { live: true })
     qs.once('sync', cb)
     qs.pipe(sink((record, next) => {
       this.schemas.put(record.value)
@@ -163,7 +163,7 @@ class Database extends EventEmitter {
   }
 
   _initSources (cb) {
-    const qs = this.createQueryStream('records', { schema: 'core/source', live: true })
+    const qs = this.createQueryStream('records', { schema: 'core/source' }, { live: true })
     qs.once('sync', cb)
     qs.pipe(sink((record, next) => {
       const { alias, key, type } = record.value
@@ -174,7 +174,7 @@ class Database extends EventEmitter {
     }))
   }
 
-  put (record, opts = {}, cb) {
+  put (record, opts = {}, cb = noop) {
     if (typeof opts === 'function') return this.put(record, {}, opts)
     record.op = Record.PUT
     record.schema = this.schemas.resolveName(record.schema)
@@ -242,12 +242,16 @@ class Database extends EventEmitter {
     })
   }
 
-  get (req, cb) {
-    this.loadStream(this.kappa.view.records.get(req), cb)
+  get (req, opts, cb) {
+    if (typeof opts === 'function') {
+      cb = opts
+      opts = {}
+    }
+    this.loadStream(this.query('record', req, opts), cb)
   }
 
   getLinks (record, cb) {
-    this.kappa.view.kv.getLinks(record, cb)
+    this.view.kv.getLinks(record, cb)
   }
 
   loadRecord (key, seq, cb) {
@@ -344,20 +348,31 @@ class Database extends EventEmitter {
   }
 
   createQueryStream (name, args, opts = {}) {
+    const self = this
     if (typeof opts.load === 'undefined') opts.load = true
 
-    let proxy = new PassThrough({ objectMode: true })
-    if (!this.view[name] || !this.view[name].query) {
+    const proxy = new PassThrough({ objectMode: true })
+    const flow = this.kappa.flows[name]
+
+    if (!flow || !flow.view.query) {
       proxy.destroy(new Error('Invalid query name: ' + name))
       return proxy
     }
 
-    const qs = this.view[name].query(args, opts)
-    qs.once('sync', () => proxy.emit('sync'))
+    if (opts.waitForSync) {
+      flow.ready(createStream)
+    } else {
+      createStream()
+    }
 
-    if (opts.load !== false) pump(qs, this.createLoadStream(), proxy)
-    else pump(qs, proxy)
     return proxy
+
+    function createStream () {
+      const qs = flow.view.query(args, opts)
+      qs.once('sync', () => proxy.emit('sync'))
+      if (opts.load !== false) pump(qs, self.createLoadStream(), proxy)
+      else pump(qs, proxy)
+    }
   }
 
   query (name, args, opts = {}, cb) {
@@ -365,10 +380,13 @@ class Database extends EventEmitter {
       cb = opts
       opts = {}
     }
-    const qs = this.createQueryStream(name, args, opts)
+
     if (cb && opts.live) {
       return cb(new Error('Cannot use live mode with callbacks'))
     }
+
+    const qs = this.createQueryStream(name, args, opts)
+
     if (cb) {
       return collect(qs, cb)
     } else {
@@ -420,3 +438,5 @@ function sink (fn) {
     }
   })
 }
+
+function noop () {}

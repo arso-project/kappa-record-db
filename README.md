@@ -68,7 +68,7 @@ Get a record from the database. `req` is a plain js object with:
   seq: int 
 }
 ```
-Either `id` or both `key` and `seq` are required. 
+Either `id` or both `key` and `seq` are required. `opts` are the same as `db.query`.
 
 #### `db.putSchema(name, schema, cb)`
 
@@ -105,6 +105,9 @@ Get a schema definition from the database.
 Query the database. Queries are defined by views (see below).
 
 Returns a readable stream of results. If `cb` is a function, it will be called with `(err, results)` instead of returning a readable stream.
+
+Opts are:
+  * `waitForSync`: if true, wait for running operations to complete before executing the query (default: false)
 
 #### `db.use(name, createView, [opts])`
 

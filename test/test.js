@@ -53,7 +53,7 @@ tape('basics', async t => {
       }, 100)
     },
     cb => {
-      db.loadStream(db.api.indexes.query({ schema: 'doc', prop: 'tags', value: 'green' }), (err, records) => {
+      db.loadStream(db.api.index.query({ schema: 'doc', prop: 'tags', value: 'green' }), (err, records) => {
         t.deepEqual(records.map(r => r.value.body).sort(), ['mars', 'moon'], 'query')
         cb()
       })
@@ -63,7 +63,6 @@ tape('basics', async t => {
     },
     cb => setTimeout(cb, 100),
     cb => {
-      console.log('here')
       db.put({
         schema: 'group',
         value: {
@@ -79,10 +78,35 @@ tape('basics', async t => {
           t.error(err)
           t.equal(records.length, 1)
           t.equal(records[0].value.name, 'stories')
-          t.end()
+          cb()
         }))
       })
+    },
+    cb => {
+      console.log('go')
+      db.put({
+        schema: 'doc',
+        value: {
+          title: 'foosaturn',
+          tags: ['saturn']
+        }
+      })
+
+      let pending = 2
+      const query = { schema: 'doc', prop: 'tags', value: 'saturn' }
+      db.query('index', query, { waitForSync: true }, (err, res) => {
+        t.error(err)
+        t.equal(res.length, 1)
+        t.equal(res[0].value.title, 'foosaturn', 'waitforsync true has result')
+        if (--pending === 0) cb()
+      })
+      db.query('index', query, { waitForSync: false }, (err, res) => {
+        t.error(err)
+        t.equal(res.length, 0, 'waitforsync false no result')
+        if (--pending === 0) cb()
+      })
     }
+
   ])
   t.end()
 })

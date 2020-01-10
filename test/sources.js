@@ -25,7 +25,7 @@ const DOC1 = {
   value: { title: 'hello', body: 'world', tags: ['red'] }
 }
 
-tape.only('replication', async t => {
+tape('replication', async t => {
   const db = new Database({ name: 'db1', alias: 'w1' })
   let db2, id1, docIds
   await runAll([
@@ -95,7 +95,7 @@ tape.only('replication', async t => {
       })
     },
     cb => {
-      db.query('indexes', { schema: 'doc', prop: 'tags', value: 'green' }, (err, records) => {
+      db.query('index', { schema: 'doc', prop: 'tags', value: 'green' }, (err, records) => {
         t.error(err)
         t.deepEqual(records.map(r => r.value.body).sort(), ['mars', 'moon'], 'query')
         cb()
