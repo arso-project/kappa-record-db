@@ -11,4 +11,7 @@ message Record {
   optional bytes value = 4;
   optional uint32 timestamp = 5;
   repeated string links = 6;
+  // TODO: We need to store the schema version.
+  // Enable with next breaking change and have it next to schema.
+  // optional uint32 schemaVersion = 7;
 }

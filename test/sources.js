@@ -75,7 +75,7 @@ tape('replication', async t => {
       db2.put({ schema: 'doc', value: { title: 'hi', body: 'mars', tags: ['green'] } }, cb)
     },
     cb => {
-      db2.put({ schema: 'doc', value: { title: 'hello', body: 'moon', tags: ['green'] }, id: id1 }, cb)
+      db2.put({ schema: 'doc', value: { title: 'ola', body: 'moon', tags: ['green'] }, id: id1 }, cb)
     },
     cb => {
       db.putSource(db2.localKey, cb)
@@ -89,7 +89,7 @@ tape('replication', async t => {
       db.query('records', { schema: 'doc' }, (err, records) => {
         t.error(err)
         t.equal(records.length, 2, 'records get len')
-        t.deepEqual(records.map(r => r.value.title).sort(), ['hello', 'hi'], 'record get vals')
+        t.deepEqual(records.map(r => r.value.title).sort(), ['hi', 'ola'], 'record get vals')
         docIds = records.map(r => r.id)
         cb()
       })

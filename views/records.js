@@ -2,7 +2,7 @@ const through = require('through2')
 const keyEncoding = require('charwise')
 const { opsForRecords } = require('./helpers')
 const Live = require('level-live')
-const debug = require('debug')('view:records')
+const debug = require('debug')('db')
 // const collect = require('stream-collector')
 
 const INDEXES = {
@@ -14,7 +14,7 @@ module.exports = function recordView (lvl, db) {
   return {
     map (msgs, next) {
       opsForRecords(db, msgs, mapToPutOp, (err, ops) => {
-        debug('map: msgs %s, ops %s err %s', msgs.length, ops.length, err)
+        // debug('map: msgs %s, ops %s err %s', msgs.length, ops.length, err)
         if (err) return next(err)
         lvl.batch(ops, () => {
           next()

@@ -3,7 +3,7 @@ const { keyseq } = require('../lib/util')
 
 module.exports = function kvView (lvl, db) {
   const kv = umkv(lvl, {
-    onupdate, onremove
+    // onupdate, onremove
   })
 
   return {
@@ -26,10 +26,10 @@ module.exports = function kvView (lvl, db) {
     }
   }
 
-  function onupdate (msg) {
-    // console.log('onupdate', msg)
-  }
-  function onremove (msg) {
-    // console.log('onremove', msg)
-  }
+  // function onupdate (msg) {
+  //   console.log('onupdate', msg)
+  // }
+  // function onremove (msg) {
+  //   console.log('onremove', msg)
+  // }
 }

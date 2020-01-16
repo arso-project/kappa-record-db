@@ -8,6 +8,7 @@ const debug = require('debug')('db')
 const inspect = require('inspect-custom-symbol')
 const pretty = require('pretty-hash')
 const pump = require('pump')
+const mutex = require('mutexify')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
@@ -44,6 +45,7 @@ class Database extends EventEmitter {
     this._feeds = {}
 
     this.indexer = new Indexer({
+      name: this._name,
       db: sub(this.lvl, 'indexer'),
       loadValue (key, seq, cb) {
         self.loadRecord(key, seq, cb)
@@ -51,11 +53,12 @@ class Database extends EventEmitter {
     })
 
     this.kappa = new Kappa()
-    this.kappa.pause()
 
     this.use('kv', createKvView)
     this.use('records', createRecordsView)
     this.use('index', createIndexview)
+
+    this.lock = mutex()
 
     this.opened = false
   }
@@ -125,7 +128,9 @@ class Database extends EventEmitter {
 
     function onfirstinit (cb) {
       const sourceOpts = {}
-      if (self._alias) sourceOpts.name = self._alias
+      // TODO: Have a block 0 header block. Enable for next breaking change.
+      // self._localWriter.append(Buffer.from('kappa-records:' + ENCODING_VERSION))
+      if (self._alias) sourceOpts.alias = self._alias
       self.putSource(self._localWriter.key, sourceOpts, cb)
     }
   }
@@ -168,6 +173,7 @@ class Database extends EventEmitter {
     qs.pipe(sink((record, next) => {
       const { alias, key, type } = record.value
       if (type !== 'kappa-records') return next()
+      debug(`[%s] source:add key %s alias %s type %s`, this._name, pretty(key), alias, type)
       const feed = this.feed(key)
       this.indexer.add(feed, { scan: true, alias })
       next()
@@ -183,7 +189,7 @@ class Database extends EventEmitter {
     if (this._validate) validate = true
     if (typeof opts.validate !== 'undefined') validate = !!opts.validate
 
-    debug(`put: id %s schema %s value %s`, record.id || '<>', record.schema, JSON.stringify(record.value).substring(0, 40))
+    // debug(`put: id %s schema %s value %s`, record.id || '<>', record.schema, JSON.stringify(record.value).substring(0, 40))
 
     if (validate) {
       if (!this.schemas.validate(record)) return cb(this.schemas.error)
@@ -232,13 +238,20 @@ class Database extends EventEmitter {
   }
 
   _putRecord (record, cb) {
-    const feed = this.localWriter()
-    record.timestamp = Date.now()
-    this.getLinks(record, (err, links) => {
-      if (err && err.status !== 404) return cb(err)
-      record.links = links
-      const buf = Record.encode(record)
-      feed.append(buf, cb)
+    this.lock(release => {
+      const feed = this.localWriter()
+      record.timestamp = Date.now()
+      this.getLinks(record, (err, links) => {
+        if (err && err.status !== 404) return finish(err)
+        record.links = links || []
+        const buf = Record.encode(record)
+        debug(`[%s] %s id %s links %d`, this._name, record.op === Record.PUT ? 'put' : 'del', record.id, record.links.length)
+        feed.append(buf, finish)
+      })
+
+      function finish (err, id) {
+        release(cb, err, id)
+      }
     })
   }
 
@@ -251,14 +264,21 @@ class Database extends EventEmitter {
   }
 
   getLinks (record, cb) {
-    this.view.kv.getLinks(record, cb)
+    // TODO: Find out if this potentially can block forever.
+    this.kappa.ready('kv', () => {
+      this.view.kv.getLinks(record, cb)
+    })
   }
 
   loadRecord (key, seq, cb) {
+    if (!key) return cb(new Error('key is required'))
+    seq = parseInt(seq)
+    if (typeof seq !== 'number') return cb(new Error('seq is not a number'))
     const feed = this.feed(key)
-    feed.get(seq, (err, record) => {
-      record = Record.decode(record, { key, seq })
+    if (!feed) return cb(new Error('feed not found'))
+    feed.get(seq, { wait: false }, (err, record) => {
       if (err) return cb(err)
+      record = Record.decode(record, { key, seq })
       cb(null, record)
     })
   }
@@ -268,9 +288,9 @@ class Database extends EventEmitter {
     if (this._feeds[key]) return this._feeds[key]
     opts.key = key
     opts.valueEncoding = Record
-    // opts.parent = this.key
-    this._feeds[key] = this.corestore.get(opts)
-    return this._feeds[key]
+    const feed = this.corestore.get(opts)
+    if (feed) this._feeds[key] = feed
+    return feed
   }
 
   // TODO: Deduplicate / error if exists?
@@ -314,9 +334,6 @@ class Database extends EventEmitter {
   createLoadStream () {
     const self = this
     const transform = through(function (req, enc, next) {
-      // TODO: This is too silent, this should not happen
-      // or there should be a defined way what to do instead.
-      if (!req.key || !req.seq) return next()
       self.loadRecord(req.key, req.seq, (err, record) => {
         if (err) this.emit('error', err)
         if (record) {
@@ -340,6 +357,7 @@ class Database extends EventEmitter {
   loadLink (link, cb) {
     if (typeof link === 'string') {
       var [key, seq] = link.split('@')
+      seq = Number(seq)
     } else {
       key = link.key
       seq = link.seq
@@ -360,7 +378,10 @@ class Database extends EventEmitter {
     }
 
     if (opts.waitForSync) {
-      flow.ready(createStream)
+      this.lock(release => {
+        flow.ready(createStream)
+        release()
+      })
     } else {
       createStream()
     }
@@ -423,11 +444,6 @@ class Database extends EventEmitter {
 function defaultTrue (val) {
   if (typeof val === 'undefined') return true
   return !!val
-}
-
-function formatKey (key) {
-  if (Buffer.isBuffer(key)) key = key.toString('hex')
-  return key.substring(0, 6) + '..'
 }
 
 function sink (fn) {

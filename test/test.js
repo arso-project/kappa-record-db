@@ -92,7 +92,6 @@ tape('basics', async t => {
       })
     },
     cb => {
-      console.log('go')
       db.put({
         schema: 'doc',
         value: {
@@ -100,7 +99,6 @@ tape('basics', async t => {
           tags: ['saturn']
         }
       })
-
       let pending = 2
       const query = { schema: 'doc', prop: 'tags', value: 'saturn' }
       db.query('index', query, { waitForSync: true }, (err, res) => {

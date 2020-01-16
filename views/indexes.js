@@ -17,7 +17,6 @@ module.exports = function indexedView (lvl, db) {
       }
       opsForRecords(db, msgs, mapToIndex, (err, ops) => {
         if (err) return next(err)
-        // console.log('OPS', ops)
         lvl.batch(ops, next)
       })
     },
@@ -99,7 +98,8 @@ function transform () {
 function decodeNode (node) {
   const { key, value: seq } = node
   const [schema, prop, value, id, source] = key.split(CHAR_SPLIT)
-  return { schema, id, key: source, seq, params: { prop, value } }
+  // return { schema, id, key: source, seq, params: { prop, value } }
+  return { key: source, seq, meta: { params: { schema, id, prop, value } } }
 }
 
 // function bucketsBySchema (msgs) {
