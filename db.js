@@ -9,6 +9,7 @@ const inspect = require('inspect-custom-symbol')
 const pretty = require('pretty-hash')
 const pump = require('pump')
 const mutex = require('mutexify')
+const LRU = require('lru-cache')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
@@ -26,6 +27,8 @@ module.exports = function (opts) {
   return new Database(opts)
 }
 module.exports.uuid = uuid
+
+const MAX_CACHE_SIZE = 16777216 // 16M
 
 class Database extends EventEmitter {
   constructor (opts = {}) {
@@ -59,6 +62,8 @@ class Database extends EventEmitter {
     this.use('index', createIndexview)
 
     this.lock = mutex()
+
+    this.recordCache = new LRU({ max: opts.maxCacheSize || MAX_CACHE_SIZE })
 
     this.opened = false
   }
@@ -99,7 +104,7 @@ class Database extends EventEmitter {
     const self = this
     const viewdb = sub(this.lvl, 'view.' + name)
     const view = createView(viewdb, self, opts)
-    this.kappa.use(name, this.indexer.source(), view)
+    this.kappa.use(name, this.indexer.source({ maxBatch: 500 }), view)
   }
 
   replicate (isInitiator, opts) {
@@ -271,16 +276,22 @@ class Database extends EventEmitter {
   }
 
   loadRecord (key, seq, cb) {
+    const self = this
     if (!key) return cb(new Error('key is required'))
+    if (Buffer.isBuffer(key)) key = key.toString('hex')
     seq = parseInt(seq)
     if (typeof seq !== 'number') return cb(new Error('seq is not a number'))
+    const cachekey = key + '@' + seq
+    if (this.recordCache.has(cachekey)) return cb(null, this.recordCache.get(cachekey))
     const feed = this.feed(key)
     if (!feed) return cb(new Error('feed not found'))
-    feed.get(seq, { wait: false }, (err, record) => {
+    feed.get(seq, { wait: false }, onget)
+    function onget (err, buf) {
       if (err) return cb(err)
-      record = Record.decode(record, { key, seq })
+      const record = Record.decode(buf, { key, seq })
+      self.recordCache.set(cachekey, record)
       cb(null, record)
-    })
+    }
   }
 
   feed (key, opts = {}) {

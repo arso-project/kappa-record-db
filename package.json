@@ -23,6 +23,7 @@
     "level-live": "github:Frando/level-live#key-encodings",
     "level-mem": "^5.0.1",
     "mutexify": "^1.2.0",
+    "lru-cache": "^5.1.1",
     "pretty-hash": "^1.0.1",
     "protocol-buffers-encodings": "^1.1.0",
     "pump": "^3.0.0",
