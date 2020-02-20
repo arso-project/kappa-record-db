@@ -1,5 +1,5 @@
 const umkv = require('unordered-materialized-kv')
-const { keyseq } = require('../lib/util')
+const { keyseq, once } = require('../lib/util')
 
 module.exports = function kvView (lvl, db) {
   const kv = umkv(lvl, {
@@ -10,7 +10,7 @@ module.exports = function kvView (lvl, db) {
     name: 'kv',
     map (msgs, next) {
       const ops = msgs.map(record => ({
-        key: record.id,
+        key: kvkey(record),
         id: keyseq(record),
         links: record.links
       }))
@@ -18,10 +18,22 @@ module.exports = function kvView (lvl, db) {
     },
     api: {
       getLinks (kappa, record, cb) {
-        kv.get(record.id, cb)
+        kv.get(kvkey(record), cb)
       },
       isLinked (kappa, record, cb) {
         kv.isLinked(keyseq(record), cb)
+      },
+      filterOutdated (kappa, records, cb) {
+        cb = once(cb)
+        let pending = records.length
+        let filtered = []
+        records.forEach(record => {
+          kv.isLinked(record, (err, isOutdated) => {
+            if (err) return cb(err)
+            if (!isOutdated) filtered.push(record)
+            if (--pending === 0) cb(null, records)
+          })
+        })
       }
     }
   }
@@ -32,4 +44,8 @@ module.exports = function kvView (lvl, db) {
   // function onremove (msg) {
   //   console.log('onremove', msg)
   // }
+}
+
+function kvkey (record) {
+  return record.schema + ':' + record.id
 }

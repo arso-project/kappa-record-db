@@ -1,7 +1,7 @@
 const through = require('through2')
 const pump = require('pump')
 
-const { opsForRecords } = require('./helpers')
+const { mapRecordsIntoLevelDB } = require('./helpers')
 
 const CHAR_END = '\uffff'
 const CHAR_SPLIT = '\u0000'
@@ -10,17 +10,11 @@ const CHAR_START = '\u0001'
 module.exports = function indexedView (lvl, db) {
   return {
     name: 'indexes',
-    map (msgs, next) {
-      let _next = next
-      next = (...args) => {
-        _next(...args)
-      }
-      opsForRecords(db, msgs, mapToIndex, (err, ops) => {
-        if (err) return next(err)
-        lvl.batch(ops, next)
-      })
+    map (records, next) {
+      mapRecordsIntoLevelDB({
+        db, records, map: mapToIndex, level: lvl
+      }, next)
     },
-
     api: {
       query (kappa, opts, cb) {
         // const { schema, prop, value, gt, lt, gte, lte, reverse, limit } = opts
@@ -42,7 +36,7 @@ module.exports = function indexedView (lvl, db) {
 function mapToIndex (msg, db) {
   const schema = db.getSchema(msg)
   const ops = []
-  const { id, key: source, seq, schema: schemaName, value } = msg
+  const { id, key: source, seq, schema: schemaName, value, lseq } = msg
   if (!schema || !schema.properties) return ops
   // TODO: Recursive?
   for (const [field, def] of Object.entries(schema.properties)) {
@@ -54,8 +48,8 @@ function mapToIndex (msg, db) {
     else values = [value[field]]
     values.forEach(val => {
       ops.push({
-        key: [schemaName, field, val, id, source].join(CHAR_SPLIT),
-        value: seq
+        key: [schemaName, field, val, lseq].join(CHAR_SPLIT),
+        value: ''
       })
     })
   }
@@ -96,51 +90,8 @@ function transform () {
 }
 
 function decodeNode (node) {
-  const { key, value: seq } = node
-  const [schema, prop, value, id, source] = key.split(CHAR_SPLIT)
+  const { key, value: _ } = node
+  const [schema, prop, value, lseq] = key.split(CHAR_SPLIT)
   // return { schema, id, key: source, seq, params: { prop, value } }
-  return { key: source, seq, meta: { params: { schema, id, prop, value } } }
+  return { lseq }
 }
-
-// function bucketsBySchema (msgs) {
-//   const buckets = {}
-//   // Sort into buckets by schema.
-//   for (const msg of msgs) {
-//     const { schema } = msg
-//     if (!buckets[schema]) buckets[schema] = []
-//     buckets[schema].push(msg)
-//   }
-//   return buckets
-// }
-
-// function loadAllSchemas (cstore, schemanames, cb) {
-//   const schemas = {}
-//   let pending = schemanames.length
-//   schemanames.forEach(schemaname => cstore.getSchema(schemaname, onschema))
-//   function onschema (err, schema) {
-//     if (!err && schema) schemas[schema.name] = schema
-//     if (--pending === 0) cb(null, schemas)
-//   }
-// }
-// function msgToOps (schema, msg) {
-//   const ops = []
-//   const { id, key: source, seq, schema: schemaName, value } = msg
-//   if (!schema || !schema.properties) return ops
-//   // TODO: Recursive?
-//   for (const [prop, def] of Object.entries(schema.properties)) {
-//     // Only care for props that want to be indexed and are not undefined.
-//     if (!def.index) continue
-//     if (typeof value[prop] === 'undefined') continue
-
-//     const ikey = [schemaName, prop, value[prop], id, source].join(CHAR_SPLIT)
-//     const ivalue = seq
-
-//     ops.push({
-//       type: 'put',
-//       key: ikey,
-//       value: ivalue
-//     })
-//   }
-//   return ops
-// }
-

@@ -1,8 +1,8 @@
 const through = require('through2')
 const keyEncoding = require('charwise')
-const { opsForRecords } = require('./helpers')
+const { mapRecordsIntoLevelDB } = require('./helpers')
 const Live = require('level-live')
-const debug = require('debug')('db')
+// const debug = require('debug')('db')
 // const collect = require('stream-collector')
 
 const INDEXES = {
@@ -12,14 +12,10 @@ const INDEXES = {
 
 module.exports = function recordView (lvl, db) {
   return {
-    map (msgs, next) {
-      opsForRecords(db, msgs, mapToPutOp, (err, ops) => {
-        // debug('map: msgs %s, ops %s err %s', msgs.length, ops.length, err)
-        if (err) return next(err)
-        lvl.batch(ops, () => {
-          next()
-        })
-      })
+    map (records, next) {
+      mapRecordsIntoLevelDB({
+        db, records, map: mapToPutOp, level: lvl
+      }, next)
     },
 
     api: {
@@ -86,8 +82,8 @@ function validate (msg) {
 }
 
 function mapToPutOp (msg, db) {
+  if (!validate(msg)) return []
   const ops = []
-  if (!validate(msg)) return ops
   const value = msg.seq || 0
   const shared = { value, keyEncoding }
   Object.entries(INDEXES).forEach(([key, fields]) => {
