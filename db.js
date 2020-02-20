@@ -10,6 +10,7 @@ const pretty = require('pretty-hash')
 const pump = require('pump')
 const mutex = require('mutexify')
 const LRU = require('lru-cache')
+const Bitfield = require('fast-bitfield')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
@@ -29,6 +30,7 @@ module.exports = function (opts) {
 module.exports.uuid = uuid
 
 const MAX_CACHE_SIZE = 16777216 // 16M
+const DEFAULT_MAX_BATCH = 500
 
 class Database extends EventEmitter {
   constructor (opts = {}) {
@@ -63,7 +65,8 @@ class Database extends EventEmitter {
 
     this.lock = mutex()
 
-    this.recordCache = new LRU({ max: opts.maxCacheSize || MAX_CACHE_SIZE })
+    this._recordCache = new LRU({ max: opts.maxCacheSize || MAX_CACHE_SIZE })
+    this._queryBitfields = new LRU({ max: 1024 * 64 }) // TODO
 
     this.opened = false
   }
@@ -104,7 +107,8 @@ class Database extends EventEmitter {
     const self = this
     const viewdb = sub(this.lvl, 'view.' + name)
     const view = createView(viewdb, self, opts)
-    this.kappa.use(name, this.indexer.source({ maxBatch: 500 }), view)
+    const maxBatch = opts.maxBatch || view.maxBatch || DEFAULT_MAX_BATCH
+    this.kappa.use(name, this.indexer.source({ maxBatch }), view)
   }
 
   replicate (isInitiator, opts) {
@@ -300,7 +304,7 @@ class Database extends EventEmitter {
     seq = parseInt(seq)
     if (typeof seq !== 'number') return cb(new Error('seq is not a number'))
     const cachekey = key + '@' + seq
-    if (this.recordCache.has(cachekey)) return cb(null, this.recordCache.get(cachekey))
+    if (this._recordCache.has(cachekey)) return cb(null, this._recordCache.get(cachekey))
 
     const feed = this.feed(key)
     if (!feed) return cb(new Error('feed not found'))
@@ -309,7 +313,7 @@ class Database extends EventEmitter {
     function onget (err, buf) {
       if (err) return cb(err)
       const record = Record.decode(buf, { key, seq })
-      self.recordCache.set(cachekey, record)
+      self._recordCache.set(cachekey, record)
       cb(null, record)
     }
   }
@@ -364,15 +368,34 @@ class Database extends EventEmitter {
 
   createLoadStream (opts = {}) {
     const self = this
+
+    const { cacheid } = opts
+
+    let bitfield = null
+    if (cacheid) {
+      if (!this._queryBitfields.has(cacheid)) {
+        this._queryBitfields.set(cacheid, Bitfield())
+      }
+      bitfield = this._queryBitfields.get(cacheid)
+    }
+
     const transform = through(function (req, enc, next) {
       self.loadLseq(req, (err, req) => {
         if (err) this.emit('error', err)
+        if (bitfield && bitfield.get(req.lseq)) {
+          this.push({ lseq: req.lseq, meta: req.meta })
+          next()
+          return
+        }
         self.loadRecord(req.key, req.seq, (err, record) => {
           if (err) this.emit('error', err)
-          if (record) {
-            if (req.meta) record.meta = req.meta
-            this.push(record)
+          if (!record) return next()
+          record.lseq = req.lseq
+          if (req.meta) record.meta = req.meta
+          if (bitfield) {
+            bitfield.set(req.lseq, 1)
           }
+          this.push(record)
           next()
         })
       })
@@ -420,6 +443,15 @@ class Database extends EventEmitter {
       if (opts.load !== false) pump(qs, self.createLoadStream(opts), proxy)
       else pump(qs, proxy)
     }
+  }
+
+  sync (cb) {
+    process.nextTick(() => {
+      this.lock(release => {
+        this.kappa.ready(cb)
+        release()
+      })
+    })
   }
 
   query (name, args, opts = {}, cb) {
