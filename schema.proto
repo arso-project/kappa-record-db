@@ -15,3 +15,11 @@ message Record {
   // Enable with next breaking change and have it next to schema.
   // optional uint32 schemaVersion = 7;
 }
+
+// The Header is DEP-0007 compatible.
+// It is written as the first message to every feed.
+// Metadata is currently empty.
+message Header {
+  required string type = 1;
+  optional bytes metadata = 2;
+}
