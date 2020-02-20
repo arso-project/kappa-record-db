@@ -103,7 +103,7 @@ class Database extends EventEmitter {
     return this.useRecordView(...args)
   }
 
-  useRecordView (name, createView, opts) {
+  useRecordView (name, createView, opts = {}) {
     const self = this
     const viewdb = sub(this.lvl, 'view.' + name)
     const view = createView(viewdb, self, opts)
@@ -427,10 +427,7 @@ class Database extends EventEmitter {
     }
 
     if (opts.waitForSync) {
-      this.lock(release => {
-        flow.ready(createStream)
-        release()
-      })
+      this.sync(createStream)
     } else {
       createStream()
     }
