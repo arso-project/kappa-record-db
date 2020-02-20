@@ -22,12 +22,14 @@ module.exports = function recordView (lvl, db) {
       query (kappa, req, opts = {}) {
         if (!req) return this.view.all(opts)
         if (typeof req === 'string') req = { id: req }
-        let { schema, id, key, seq } = req
+        let { schema, id, key, seq, all } = req
 
         if (schema) schema = db.schemas.resolveName(schema)
 
         let filter
-        if (schema && !id) {
+        if (all) {
+          filter = includerange(['is'])
+        } else if (schema && !id) {
           filter = includerange(['si', schema])
         } else if (!schema && id) {
           filter = includerange(['is', id])
@@ -98,11 +100,11 @@ function mapToPutOp (msg, db) {
 
 function parseRow () {
   return through.obj(function (row, enc, next) {
-    const { key, value: seq, type } = row
+    const { key, value: seq } = row
     const idx = key.shift()
     const index = INDEXES[idx]
     if (!index) return next()
-    const record = { seq: Number(seq), type }
+    const record = { seq: Number(seq) }
     for (let i = 0; i < key.length; i++) {
       record[index[i]] = key[i]
     }
