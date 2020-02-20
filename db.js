@@ -3,7 +3,7 @@ const ram = require('random-access-memory')
 const sub = require('subleveldown')
 const memdb = require('level-mem')
 const collect = require('stream-collector')
-const { PassThrough, Writable } = require('stream')
+const { PassThrough } = require('stream')
 const debug = require('debug')('db')
 const inspect = require('inspect-custom-symbol')
 const pretty = require('pretty-hash')
@@ -15,13 +15,13 @@ const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
 const Corestore = require('corestore')
 
-const { uuid, through } = require('./lib/util')
+const { uuid, through, sink, noop, defaultTrue } = require('./lib/util')
 const Schema = require('./lib/schema')
 const Record = require('./lib/record')
 
 const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
-const createIndexview = require('./views/indexes')
+const createIndexView = require('./views/indexes')
 
 module.exports = function (opts) {
   return new Database(opts)
@@ -59,7 +59,7 @@ class Database extends EventEmitter {
 
     this.use('kv', createKvView)
     this.use('records', createRecordsView)
-    this.use('index', createIndexview)
+    this.use('index', createIndexView)
 
     this.lock = mutex()
 
@@ -115,7 +115,6 @@ class Database extends EventEmitter {
     const self = this
     this.corestore.ready(() => {
       this._initPrimaryFeeds(() => {
-        this.schemas = this.opts.schemas || new Schema({ key: this.key })
         this._initSchemas(() => {
           this._initSources(() => {
             if (!this._localWriter.length) onfirstinit(finish)
@@ -164,12 +163,9 @@ class Database extends EventEmitter {
   }
 
   _initSchemas (cb) {
-    const qs = this.createQueryStream('records', { schema: 'core/schema' }, { live: true })
-    qs.once('sync', cb)
-    qs.pipe(sink((record, next) => {
-      this.schemas.put(record.value)
-      next()
-    }))
+    this.schemas = this.opts.schemas || new Schema({ key: this.key })
+    if (this.schemas.open) this.schemas.open(this, cb)
+    else cb()
   }
 
   _initSources (cb) {
@@ -180,7 +176,7 @@ class Database extends EventEmitter {
       if (type !== 'kappa-records') return next()
       debug(`[%s] source:add key %s alias %s type %s`, this._name, pretty(key), alias, type)
       const feed = this.feed(key)
-      this.indexer.add(feed, { scan: true, alias })
+      this.indexer.add(feed, { scan: true, name: alias })
       next()
     }))
   }
@@ -246,7 +242,7 @@ class Database extends EventEmitter {
     this.lock(release => {
       const feed = this.localWriter()
       record.timestamp = Date.now()
-      this.getLinks(record, (err, links) => {
+      this._getLinks(record, (err, links) => {
         if (err && err.status !== 404) return finish(err)
         record.links = links || []
         const buf = Record.encode(record)
@@ -261,18 +257,40 @@ class Database extends EventEmitter {
   }
 
   get (req, opts, cb) {
-    if (typeof opts === 'function') {
-      cb = opts
-      opts = {}
-    }
-    this.loadStream(this.query('records', req, opts), cb)
+    if (typeof opts === 'function') return this.get(req, {}, opts)
+    this.query('records', req, opts, cb)
   }
 
-  getLinks (record, cb) {
+  _getLinks (record, cb) {
     // TODO: Find out if this potentially can block forever.
     this.kappa.ready('kv', () => {
       this.view.kv.getLinks(record, cb)
     })
+  }
+
+  loadLseq (req, cb) {
+    if (req.lseq && req.seq && req.key) {
+      cb(null, req)
+      return
+    }
+    if (req.lseq && (!req.key || !req.seq)) {
+      this.indexer.lseqToKeyseq(req.lseq, (err, keyseq) => {
+        if (!err && keyseq) {
+          req.key = keyseq.key
+          req.seq = keyseq.seq
+        }
+        cb(null, req)
+      })
+      return
+    }
+    if (!req.lseq && req.key && typeof req.seq !== 'undefined') {
+      this.indexer.keyseqToLseq(req.key, req.seq, (err, lseq) => {
+        if (!err && lseq) req.lseq = lseq
+        cb(null, req)
+      })
+      return
+    }
+    cb(null, req)
   }
 
   loadRecord (key, seq, cb) {
@@ -283,8 +301,10 @@ class Database extends EventEmitter {
     if (typeof seq !== 'number') return cb(new Error('seq is not a number'))
     const cachekey = key + '@' + seq
     if (this.recordCache.has(cachekey)) return cb(null, this.recordCache.get(cachekey))
+
     const feed = this.feed(key)
     if (!feed) return cb(new Error('feed not found'))
+
     feed.get(seq, { wait: false }, onget)
     function onget (err, buf) {
       if (err) return cb(err)
@@ -342,27 +362,22 @@ class Database extends EventEmitter {
     this.put(record, cb)
   }
 
-  createLoadStream () {
+  createLoadStream (opts = {}) {
     const self = this
     const transform = through(function (req, enc, next) {
-      self.loadRecord(req.key, req.seq, (err, record) => {
+      self.loadLseq(req, (err, req) => {
         if (err) this.emit('error', err)
-        if (record) {
-          if (req.meta) record.meta = req.meta
-          this.push(record)
-        }
-        next()
+        self.loadRecord(req.key, req.seq, (err, record) => {
+          if (err) this.emit('error', err)
+          if (record) {
+            if (req.meta) record.meta = req.meta
+            this.push(record)
+          }
+          next()
+        })
       })
     })
     return transform
-  }
-
-  loadStream (stream, cb) {
-    if (typeof stream === 'function') return this.loadStream(null, stream)
-    const transform = this.createLoadStream()
-    if (stream) stream.pipe(transform)
-    if (cb) return collect(transform, cb)
-    else return transform
   }
 
   loadLink (link, cb) {
@@ -402,7 +417,7 @@ class Database extends EventEmitter {
     function createStream () {
       const qs = flow.view.query(args, opts)
       qs.once('sync', () => proxy.emit('sync'))
-      if (opts.load !== false) pump(qs, self.createLoadStream(), proxy)
+      if (opts.load !== false) pump(qs, self.createLoadStream(opts), proxy)
       else pump(qs, proxy)
     }
   }
@@ -451,19 +466,3 @@ class Database extends EventEmitter {
     }
   }
 }
-
-function defaultTrue (val) {
-  if (typeof val === 'undefined') return true
-  return !!val
-}
-
-function sink (fn) {
-  return new Writable({
-    objectMode: true,
-    write (msg, enc, next) {
-      fn(msg, next)
-    }
-  })
-}
-
-function noop () {}

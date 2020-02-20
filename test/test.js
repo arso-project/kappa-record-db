@@ -42,7 +42,7 @@ tape('basics', async t => {
     cb => {
       // db.kappa.ready('records', () => {
       setTimeout(() => {
-        db.loadStream(db.api.records.get({ schema: 'doc' }), (err, records) => {
+        db.query('records', { schema: 'doc' }, (err, records) => {
           console.log('oi')
           t.error(err)
           t.equal(records.length, 2, 'records get len')
@@ -53,7 +53,7 @@ tape('basics', async t => {
       }, 100)
     },
     cb => {
-      db.loadStream(db.api.index.query({ schema: 'doc', prop: 'tags', value: 'green' }), (err, records) => {
+      db.query('index', { schema: 'doc', prop: 'tags', value: 'green' }, (err, records) => {
         t.deepEqual(records.map(r => r.value.body).sort(), ['mars', 'moon'], 'query')
         cb()
       })
@@ -83,12 +83,12 @@ tape('basics', async t => {
     cb => setTimeout(() => cb(), 200),
     cb => {
       db.kappa.ready(() => {
-        collect(db.loadStream(db.api.records.get({ schema: 'group' }), (err, records) => {
+        db.query('records', { schema: 'group' }, (err, records) => {
           t.error(err)
           t.equal(records.length, 1)
           t.equal(records[0].value.name, 'stories')
           cb()
-        }))
+        })
       })
     },
     cb => {
