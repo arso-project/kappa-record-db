@@ -19,6 +19,7 @@ const Corestore = require('corestore')
 const { uuid, through, sink, noop, defaultTrue } = require('./lib/util')
 const Schema = require('./lib/schema')
 const Record = require('./lib/record')
+const { Header } = require('./lib/messages')
 
 const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
@@ -31,6 +32,7 @@ module.exports.uuid = uuid
 
 const MAX_CACHE_SIZE = 16777216 // 16M
 const DEFAULT_MAX_BATCH = 500
+const FEED_TYPE = 'kappa-records'
 
 class Database extends EventEmitter {
   constructor (opts = {}) {
@@ -52,6 +54,11 @@ class Database extends EventEmitter {
     this.indexer = new Indexer({
       name: this._name,
       db: sub(this.lvl, 'indexer'),
+      // This filters out the first messages from the feed.
+      transform (msg, next) {
+        if (msg.seq === 0) return next()
+        next(msg)
+      },
       loadValue (key, seq, cb) {
         self.loadRecord(key, seq, cb)
       }
@@ -108,7 +115,10 @@ class Database extends EventEmitter {
     const viewdb = sub(this.lvl, 'view.' + name)
     const view = createView(viewdb, self, opts)
     const maxBatch = opts.maxBatch || view.maxBatch || DEFAULT_MAX_BATCH
-    this.kappa.use(name, this.indexer.source({ maxBatch }), view)
+    const sourceOpts = {
+      maxBatch,
+    }
+    this.kappa.use(name, this.indexer.source(sourceOpts), view)
   }
 
   replicate (isInitiator, opts) {
@@ -135,11 +145,17 @@ class Database extends EventEmitter {
     }
 
     function onfirstinit (cb) {
-      const sourceOpts = {}
-      // TODO: Have a block 0 header block. Enable for next breaking change.
-      // self._localWriter.append(Buffer.from('kappa-records:' + ENCODING_VERSION))
-      if (self._alias) sourceOpts.alias = self._alias
-      self.putSource(self._localWriter.key, sourceOpts, cb)
+      const header = Header.encode({
+        type: FEED_TYPE,
+        metadata: JSON.stringify({ encodingVersion: 1 })
+      })
+      self._localWriter.append(header, err => {
+        if (err) return cb(err)
+
+        const sourceOpts = {}
+        if (self._alias) sourceOpts.alias = self._alias
+        self.putSource(self._localWriter.key, sourceOpts, cb)
+      })
     }
   }
 
@@ -177,7 +193,7 @@ class Database extends EventEmitter {
     qs.once('sync', cb)
     qs.pipe(sink((record, next) => {
       const { alias, key, type } = record.value
-      if (type !== 'kappa-records') return next()
+      if (type !== FEED_TYPE) return next()
       debug(`[%s] source:add key %s alias %s type %s`, this._name, pretty(key), alias, type)
       const feed = this.feed(key)
       this.indexer.add(feed, { scan: true, name: alias })
@@ -302,6 +318,7 @@ class Database extends EventEmitter {
     if (!key) return cb(new Error('key is required'))
     if (Buffer.isBuffer(key)) key = key.toString('hex')
     seq = parseInt(seq)
+    if (seq === 0) return cb(new Error('Seq 0 is the header, not a record'))
     if (typeof seq !== 'number') return cb(new Error('seq is not a number'))
     const cachekey = key + '@' + seq
     if (this._recordCache.has(cachekey)) return cb(null, this._recordCache.get(cachekey))
