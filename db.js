@@ -103,7 +103,7 @@ class Database extends EventEmitter {
   }
 
   replicate (isInitiator, opts) {
-    return this.corestore.replicate(isInitiator, null, opts)
+    return this.corestore.replicate(isInitiator, opts)
   }
 
   ready (cb) {
