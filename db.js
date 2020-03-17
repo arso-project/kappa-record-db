@@ -54,13 +54,14 @@ class Database extends EventEmitter {
     this.indexer = new Indexer({
       name: this._name,
       db: sub(this.lvl, 'indexer'),
-      // This filters out the first messages from the feed.
-      transform (msg, next) {
-        if (msg.seq === 0) return next()
-        next(msg)
-      },
-      loadValue (key, seq, cb) {
-        self.loadRecord(key, seq, cb)
+      // Load and decode value.
+      loadValue (message, next) {
+        // Skip first message (header)
+        if (message.seq === 0) return next(message)
+        self.loadRecord(message, (err, record) => {
+          if (err) return next(message)
+          next(record)
+        })
       }
     })
 
@@ -106,19 +107,24 @@ class Database extends EventEmitter {
     this.kappa.close(cb)
   }
 
-  use (...args) {
-    return this.useRecordView(...args)
-  }
-
-  useRecordView (name, createView, opts = {}) {
+  use (name, createView, opts = {}) {
     const self = this
     const viewdb = sub(this.lvl, 'view.' + name)
     const view = createView(viewdb, self, opts)
     const maxBatch = opts.maxBatch || view.maxBatch || DEFAULT_MAX_BATCH
     const sourceOpts = {
-      maxBatch,
+      maxBatch
     }
-    this.kappa.use(name, this.indexer.source(sourceOpts), view)
+    const viewOpts = {
+      filter (messages, next) {
+        // const filtered = messages.filter(msg => msg.schema)
+        const filtered = messages.map(msg => {
+          return { schema: 'any', links: [], op: 0, ...msg }
+        })
+        next(filtered)
+      }
+    }
+    this.kappa.use(name, this.indexer.source(sourceOpts), view, viewOpts)
   }
 
   replicate (isInitiator, opts) {
@@ -147,10 +153,11 @@ class Database extends EventEmitter {
     function onfirstinit (cb) {
       const header = Header.encode({
         type: FEED_TYPE,
-        metadata: JSON.stringify({ encodingVersion: 1 })
+        metadata: Buffer.from(JSON.stringify({ encodingVersion: 1 }))
       })
       self._localWriter.append(header, err => {
         if (err) return cb(err)
+        return cb()
 
         const sourceOpts = {}
         if (self._alias) sourceOpts.alias = self._alias
@@ -313,33 +320,38 @@ class Database extends EventEmitter {
     cb(null, req)
   }
 
-  loadRecord (key, seq, cb) {
+  loadRecord (req, cb) {
     const self = this
-    if (!key) return cb(new Error('key is required'))
-    if (Buffer.isBuffer(key)) key = key.toString('hex')
-    seq = parseInt(seq)
-    if (seq === 0) return cb(new Error('Seq 0 is the header, not a record'))
-    if (typeof seq !== 'number') return cb(new Error('seq is not a number'))
-    const cachekey = key + '@' + seq
-    if (this._recordCache.has(cachekey)) return cb(null, this._recordCache.get(cachekey))
-
-    const feed = this.feed(key)
-    if (!feed) return cb(new Error('feed not found'))
-
-    feed.get(seq, { wait: false }, onget)
-    function onget (err, buf) {
+    this.loadLseq(req, (err, req) => {
+      // TODO: Error out?
       if (err) return cb(err)
-      const record = Record.decode(buf, { key, seq })
-      self._recordCache.set(cachekey, record)
-      cb(null, record)
-    }
+      let { key, seq, lseq } = req
+      if (!key) return cb(new Error('key is required'))
+      if (Buffer.isBuffer(key)) key = key.toString('hex')
+      seq = parseInt(seq)
+      if (seq === 0) return cb(new Error('seq 0 is the header, not a record'))
+      if (typeof seq !== 'number') return cb(new Error('seq is not a number'))
+      const cachekey = key + '@' + seq
+      if (this._recordCache.has(cachekey)) return cb(null, this._recordCache.get(cachekey))
+
+      const feed = this.feed(key)
+      if (!feed) return cb(new Error('feed not found'))
+
+      feed.get(seq, { wait: false }, onget)
+      function onget (err, buf) {
+        if (err) return cb(err)
+        const record = Record.decode(buf, { key, seq, lseq })
+        self._recordCache.set(cachekey, record)
+        cb(null, record)
+      }
+    })
   }
 
   feed (key, opts = {}) {
     if (Buffer.isBuffer(key)) key = key.toString('hex')
     if (this._feeds[key]) return this._feeds[key]
     opts.key = key
-    opts.valueEncoding = Record
+    // opts.valueEncoding = Record
     const feed = this.corestore.get(opts)
     if (feed) this._feeds[key] = feed
     return feed
@@ -404,7 +416,7 @@ class Database extends EventEmitter {
           next()
           return
         }
-        self.loadRecord(req.key, req.seq, (err, record) => {
+        self.loadRecord(req, (err, record) => {
           if (err) this.emit('error', err)
           if (!record) return next()
           record.lseq = req.lseq
@@ -428,7 +440,7 @@ class Database extends EventEmitter {
       key = link.key
       seq = link.seq
     }
-    this.loadRecord(key, seq, cb)
+    this.loadRecord({ key, seq }, cb)
   }
 
   createQueryStream (name, args, opts = {}) {

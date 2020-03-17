@@ -20,6 +20,21 @@ const groupSchema = {
   }
 }
 
+tape('minimal', t => {
+  const db = new Database()
+  runAll([
+    cb => db.putSchema('doc', docSchema, cb),
+    cb => db.put({ schema: 'doc', value: { title: 'hello', body: 'world' } }, cb),
+    cb => db.query('records', { schema: 'doc' }, { waitForSync: true }, (err, records) => {
+      t.error(err)
+      t.equal(records.length, 1)
+      t.equal(records[0].value.title, 'hello')
+      cb()
+    }),
+    () => t.end()
+  ])
+})
+
 tape('basics', async t => {
   const db = new Database()
   let id1
