@@ -157,8 +157,6 @@ class Database extends EventEmitter {
       })
       self._localWriter.append(header, err => {
         if (err) return cb(err)
-        return cb()
-
         const sourceOpts = {}
         if (self._alias) sourceOpts.alias = self._alias
         self.putSource(self._localWriter.key, sourceOpts, cb)
