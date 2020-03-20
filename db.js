@@ -57,7 +57,7 @@ class Database extends EventEmitter {
       // Load and decode value.
       loadValue (message, next) {
         // Skip first message (header)
-        if (message.seq === 0) return next(message)
+        if (message.seq === 0) return next(null)
         self.loadRecord(message, (err, record) => {
           if (err) return next(message)
           next(record)
@@ -111,20 +111,13 @@ class Database extends EventEmitter {
     const self = this
     const viewdb = sub(this.lvl, 'view.' + name)
     const view = createView(viewdb, self, opts)
-    const maxBatch = opts.maxBatch || view.maxBatch || DEFAULT_MAX_BATCH
     const sourceOpts = {
-      maxBatch
-    }
-    const viewOpts = {
+      maxBatch: opts.maxBatch || view.maxBatch || DEFAULT_MAX_BATCH,
       filter (messages, next) {
-        // const filtered = messages.filter(msg => msg.schema)
-        const filtered = messages.map(msg => {
-          return { schema: 'any', links: [], op: 0, ...msg }
-        })
-        next(filtered)
+        next(messages.filter(msg => msg.seq !== 0))
       }
     }
-    this.kappa.use(name, this.indexer.source(sourceOpts), view, viewOpts)
+    this.kappa.use(name, this.indexer.source(sourceOpts), view)
   }
 
   replicate (isInitiator, opts) {
@@ -329,8 +322,11 @@ class Database extends EventEmitter {
       seq = parseInt(seq)
       if (seq === 0) return cb(new Error('seq 0 is the header, not a record'))
       if (typeof seq !== 'number') return cb(new Error('seq is not a number'))
+
       const cachekey = key + '@' + seq
-      if (this._recordCache.has(cachekey)) return cb(null, this._recordCache.get(cachekey))
+      if (this._recordCache.has(cachekey)) {
+        return cb(null, this._recordCache.get(cachekey))
+      }
 
       const feed = this.feed(key)
       if (!feed) return cb(new Error('feed not found'))
