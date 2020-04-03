@@ -33,17 +33,17 @@ function collectOps (db, record, mapFn, cb) {
 
       // map linked records to delete ops
       for (const linkedRecord of linkedRecords) {
-        ops.push(...mapToDel(db, linkedRecord, mapFn))
+        Array.prototype.push.apply(ops, mapToDel(db, linkedRecord, mapFn))
       }
 
       // map the current record itself
       if (record.op === Record.PUT) {
-        ops.push(...mapToPut(db, record, mapFn))
+        Array.prototype.push.apply(ops, mapToPut(db, record, mapFn))
       } else if (record.op === Record.DEL) {
-        ops.push(...mapToDel(db, record, mapFn))
+        Array.prototype.push.apply(ops, mapToDel(db, record, mapFn))
       }
 
-      cb(err, ops)
+      cb(null, ops)
     })
   })
 }
@@ -61,13 +61,22 @@ function collectLinkedRecords (db, record, cb) {
 }
 
 function mapToPut (db, record, mapFn) {
-  return mapFn(record, db).map(op => {
-    return { ...op, type: 'put' }
-  })
+  let ops = mapFn(record, db)
+  return mapResult(ops, 'put')
 }
 
 function mapToDel (db, record, mapFn) {
-  return mapFn(record, db).map(op => {
-    return { ...op, type: 'del' }
+  let ops = mapFn(record, db)
+  return mapResult(ops, 'del')
+}
+
+function mapResult (ops, type) {
+  if (!ops) return []
+  if (!Array.isArray(ops)) ops = [ops]
+  return ops.map(op => {
+    if (typeof op === 'string') op = { key: op }
+    if (type === 'put' && !op.value) op.value = ''
+    op.type = type
+    return op
   })
 }
