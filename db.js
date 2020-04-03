@@ -25,6 +25,8 @@ const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
 const createIndexView = require('./views/indexes')
 
+const LEN = Symbol('record-size')
+
 module.exports = function (opts) {
   return new Database(opts)
 }
@@ -73,8 +75,20 @@ class Database extends EventEmitter {
 
     this.lock = mutex()
 
-    this._recordCache = new LRU({ max: opts.maxCacheSize || MAX_CACHE_SIZE })
-    this._queryBitfields = new LRU({ max: 1024 * 64 }) // TODO
+    // Cache for records. Max cache size can be set as an option.
+    // The length for each record is the buffer length of the serialized record,
+    // so the actual cache size will be a bit higher.
+    this._recordCache = new LRU({
+      max: opts.maxCacheSize || MAX_CACHE_SIZE,
+      length (record) {
+        return record[LEN] || 64
+      }
+    })
+    // Cache for query bitfields. This will usually take 4KB per bitfield.
+    // We cache max 4096 bitfields, amounting to max 16MB bitfield cache size.
+    this._queryBitfields = new LRU({
+      max: 4096
+    })
 
     this.opened = false
   }
@@ -335,6 +349,7 @@ class Database extends EventEmitter {
       function onget (err, buf) {
         if (err) return cb(err)
         const record = Record.decode(buf, { key, seq, lseq })
+        record[LEN] = buf.length
         self._recordCache.set(cachekey, record)
         cb(null, record)
       }
@@ -402,7 +417,7 @@ class Database extends EventEmitter {
       bitfield = this._queryBitfields.get(cacheid)
     }
 
-    const transform = through(function (req, enc, next) {
+    const transform = through(function (req, _enc, next) {
       self.loadLseq(req, (err, req) => {
         if (err) this.emit('error', err)
         if (bitfield && bitfield.get(req.lseq)) {
