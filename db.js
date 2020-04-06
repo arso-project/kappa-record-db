@@ -187,8 +187,8 @@ class Database extends EventEmitter {
         this._localWriter = this.feed(null, { default: true })
       }
       this._localWriter.ready(() => {
-        self.indexer.add(self._primaryFeed)
-        self.indexer.add(self._localWriter)
+        self.indexer.add(self._primaryFeed, { scan: true })
+        self.indexer.add(self._localWriter, { scan: true })
         cb()
       })
     })
