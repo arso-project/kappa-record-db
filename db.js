@@ -428,12 +428,12 @@ class Database extends EventEmitter {
         self.loadRecord(req, (err, record) => {
           if (err) this.emit('error', err)
           if (!record) return next()
-          record.lseq = req.lseq
-          if (req.meta) record.meta = req.meta
+          const recordClone = Object.assign({}, record)
+          if (req.meta) recordClone.meta = req.meta
           if (bitfield) {
             bitfield.set(req.lseq, 1)
           }
-          this.push(record)
+          this.push(recordClone)
           next()
         })
       })
