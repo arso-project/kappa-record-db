@@ -53,7 +53,8 @@ function collectLinkedRecords (db, record, cb) {
   const records = []
   let pending = record.links.length
   record.links.forEach(link => {
-    db.loadLink(link, (err, record) => {
+    var [key, seq] = link.split('@')
+    db.loadRecord({ key, seq }, (err, record) => {
       if (!err && record) records.push(record)
       if (--pending === 0) cb(null, records)
     })

@@ -11,32 +11,26 @@ const pump = require('pump')
 const mutex = require('mutexify')
 const LRU = require('lru-cache')
 const Bitfield = require('fast-bitfield')
+const thunky = require('thunky')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
 const Corestore = require('corestore')
 
-const { uuid, through, sink, noop, defaultTrue } = require('./lib/util')
-const Schema = require('./lib/schema')
-const Record = require('./lib/record')
+const { uuid, through, noop, defaultTrue } = require('./lib/util')
 const { Header } = require('./lib/messages')
 
-const createKvView = require('./views/kv')
-const createRecordsView = require('./views/records')
-const createIndexView = require('./views/indexes')
-
 const LEN = Symbol('record-size')
-
-module.exports = function (opts) {
-  return new Database(opts)
-}
-module.exports.uuid = uuid
 
 const MAX_CACHE_SIZE = 16777216 // 16M
 const DEFAULT_MAX_BATCH = 500
 const FEED_TYPE = 'kappa-records'
 
-class Database extends EventEmitter {
+module.exports = class Database extends EventEmitter {
+  static uuid () {
+    return uuid()
+  }
+
   constructor (opts = {}) {
     super()
     const self = this
@@ -47,8 +41,9 @@ class Database extends EventEmitter {
 
     this._validate = defaultTrue(opts.validate)
 
-    this.encoding = Record
     this.lvl = opts.db || memdb()
+
+    this._feeddb = sub(this.lvl, 'feeds')
 
     this.corestore = opts.corestore || new Corestore(opts.storage || ram)
     this._feeds = {}
@@ -69,11 +64,9 @@ class Database extends EventEmitter {
 
     this.kappa = new Kappa()
 
-    this.use('kv', createKvView)
-    this.use('records', createRecordsView)
-    this.use('index', createIndexView)
-
     this.lock = mutex()
+
+    this.defaultFeedType = opts.defaultFeedType || FEED_TYPE
 
     // Cache for records. Max cache size can be set as an option.
     // The length for each record is the buffer length of the serialized record,
@@ -91,6 +84,15 @@ class Database extends EventEmitter {
     })
 
     this.opened = false
+    this.middlewares = []
+    this._api = {}
+
+    this._feedNames = {}
+    this._feeds = [null]
+
+    this.open = thunky(this._open.bind(this))
+    this.close = thunky(this._close.bind(this))
+    this.ready = this.open
   }
 
   get key () {
@@ -110,15 +112,43 @@ class Database extends EventEmitter {
   }
 
   get api () {
-    return this.kappa.view
+    return { ...this.kappa.view, ...this._api }
   }
 
-  localWriter () {
-    return this._localWriter
+  useMiddleware (name, handlers) {
+    this.middlewares.push({ name, handlers })
+    this._api[name] = handlers.api
+    if (handlers.views) {
+      for (const [name, createView] of Object.entries(handlers.views)) {
+        this.use(name, createView)
+      }
+    }
   }
 
-  close (cb) {
-    this.kappa.close(cb)
+  applyMiddleware (op, args, cb) {
+    if (typeof args === 'function') {
+      cb = args
+      args = []
+    }
+    let [state, ...other] = args
+    let hasState = true
+    if (state === undefined) hasState = false
+
+    let middlewares = this.middlewares.filter(m => m.handlers[op])
+    if (!middlewares.length) return cb(null, state)
+
+    next(state)
+
+    function next (state) {
+      let middleware = middlewares.shift()
+      if (!middleware) return cb(null, state)
+      if (hasState) middleware.handlers[op](state, ...other, done)
+      else middleware.handlers[op](done)
+      function done (err, state) {
+        if (err) return cb(err)
+        process.nextTick(next, state)
+      }
+    }
   }
 
   use (name, createView, opts = {}) {
@@ -138,16 +168,19 @@ class Database extends EventEmitter {
     return this.corestore.replicate(isInitiator, opts)
   }
 
-  ready (cb) {
+  _close (cb) {
+    this.kappa.close(() => {
+      this.corestore.close(cb)
+    })
+  }
+
+  _open (cb) {
     const self = this
     this.corestore.ready(() => {
-      this._initPrimaryFeeds(() => {
-        this._initSchemas(() => {
-          this._initSources(() => {
-            if (!this._localWriter.length) onfirstinit(finish)
-            else finish()
-          })
-        })
+      this._initFeeds(() => {
+        this._primaryFeed = this.getFeed('primary')
+        this._localWriter = this.getFeed('localwriter')
+        this.applyMiddleware('open', finish)
       })
     })
 
@@ -156,89 +189,131 @@ class Database extends EventEmitter {
       self.opened = true
       cb()
     }
-
-    function onfirstinit (cb) {
-      const header = Header.encode({
-        type: FEED_TYPE,
-        metadata: Buffer.from(JSON.stringify({ encodingVersion: 1 }))
-      })
-      self._localWriter.append(header, err => {
-        if (err) return cb(err)
-        const sourceOpts = {}
-        if (self._alias) sourceOpts.alias = self._alias
-        self.putSource(self._localWriter.key, sourceOpts, cb)
-      })
-    }
   }
 
-  _initPrimaryFeeds (cb) {
-    const self = this
-
-    if (this.opts.key) {
-      this._primaryFeed = this.feed(this.opts.key)
-    } else {
-      this._primaryFeed = this.feed(null, { default: true })
-    }
-
-    this._primaryFeed.ready(() => {
-      if (this._primaryFeed.writable) {
-        this._localWriter = this._primaryFeed
-      } else {
-        this._localWriter = this.feed(null, { default: true })
-      }
-      this._localWriter.ready(() => {
-        self.indexer.add(self._primaryFeed, { scan: true })
-        self.indexer.add(self._localWriter, { scan: true })
-        cb()
+  _initFeeds (cb) {
+    this._openFeeds(() => {
+      this.addFeed({ name: 'primary', key: this.opts.key }, (err, feed) => {
+        if (err) return cb(err)
+        if (feed.writable) {
+          this.addFeed({ name: 'localwriter', key: feed.key }, cb)
+        } else {
+          this.addFeed({ name: 'localwriter' }, cb)
+        }
       })
     })
   }
 
-  _initSchemas (cb) {
-    this.schemas = this.opts.schemas || new Schema({ key: this.key })
-    if (this.schemas.open) this.schemas.open(this, cb)
-    else cb()
+  _openFeeds (cb) {
+    const rs = this._feeddb.createReadStream({ gt: 'key/', lt: 'key/z' })
+    rs.on('data', ({ value }) => {
+      value = JSON.parse(value)
+      const { name, key, type } = value
+      this._addFeedInternally(key, name, type)
+    })
+    rs.on('end', cb)
   }
 
-  _initSources (cb) {
-    const qs = this.createQueryStream('records', { schema: 'core/source' }, { live: true })
-    qs.once('sync', cb)
-    qs.pipe(sink((record, next) => {
-      const { alias, key, type } = record.value
-      if (type !== FEED_TYPE) return next()
-      debug(`[%s] source:add key %s alias %s type %s`, this._name, pretty(key), alias, type)
-      const feed = this.feed(key)
-      this.indexer.add(feed, { scan: true, name: alias })
-      next()
-    }))
+  _addFeedInternally (key, name, type) {
+    const feed = this.corestore.get({ key })
+    let id = this._feeds.length
+    const info = { feed, key, name, type, id }
+    this._feeds.push(info)
+    this._feedNames[name] = id
+    this._feedNames[key] = id
+    this.indexer.add(feed, { scan: true })
+    this.emit('feed', feed)
+    debug('[%s] add feed key %s name %s type %s', this._name, pretty(feed.key), name, type)
+
+    return info
   }
 
-  put (record, opts = {}, cb = noop) {
-    if (typeof opts === 'function') return this.put(record, {}, opts)
-    record.op = Record.PUT
-    record.schema = this.schemas.resolveName(record.schema)
+  // Write header to feed.
+  // TODO: Delegate this to a feed type handler.
+  _initFeed (info, cb) {
+    const { feed, type } = info
+    const header = Header.encode({
+      type,
+      metadata: Buffer.from(JSON.stringify({ encodingVersion: 1 }))
+    })
+    feed.append(header, cb)
+  }
 
-    let validate = false
-    if (this._validate) validate = true
-    if (typeof opts.validate !== 'undefined') validate = !!opts.validate
+  getFeedInfo (keyOrName) {
+    if (Buffer.isBuffer(keyOrName)) keyOrName = keyOrName.toString('hex')
+    if (this._feedNames[keyOrName] !== undefined) {
+      return this._feeds[this._feedNames[keyOrName]]
+    }
+    return null
+  }
 
-    // debug(`put: id %s schema %s value %s`, record.id || '<>', record.schema, JSON.stringify(record.value).substring(0, 40))
+  getFeed (keyOrName) {
+    const info = this.getFeedInfo(keyOrName)
+    if (info) return info.feed
+    return null
+  }
 
-    if (validate) {
-      if (!this.schemas.validate(record)) return cb(this.schemas.error)
+  hasFeed (keyOrName) {
+    if (Buffer.isBuffer(keyOrName)) keyOrName = keyOrName.toString('hex')
+    if (this._feedNames[keyOrName] !== undefined) return true
+    return false
+  }
+
+  addFeed (opts, cb = noop) {
+    let { name, key, type } = opts
+    if (!name && !key) return cb(new Error('Either key or name is required'))
+    if (key && Buffer.isBuffer(key)) key = key.toString('hex')
+    if (this.hasFeed(name)) {
+      let info = this.getFeedInfo(name)
+      if (key && info.key !== key) return cb(new Error('Invalid key for name'))
+      return cb(null, info)
+    }
+    if (this.hasFeed(key)) {
+      let info = this.getFeedInfo(key)
+      if (info.name !== name) {
+        this._feedNames[name] = info.id
+      }
+      return cb(null, info.feed)
     }
 
-    if (!record.id) record.id = uuid()
-    this._putRecord(record, err => err ? cb(err) : cb(null, record.id))
+    if (!type) type = this.defaultFeedType
+    if (!name) name = uuid()
+    if (!key) key = this.corestore.get().key.toString('hex')
+
+    const data = { name, key, type }
+    const ops = [
+      { type: 'put', key: 'name/' + name, value: key },
+      { type: 'put', key: 'key/' + key, value: JSON.stringify(data) }
+    ]
+    this._feeddb.batch(ops, err => {
+      if (err) return cb(err)
+      const info = this._addFeedInternally(key, name, type)
+      const feed = info.feed
+      feed.ready(() => {
+        if (feed.writable && !feed.length) {
+          this._initFeed(info, err => cb(err, feed))
+        } else {
+          cb(null, feed)
+        }
+      })
+    })
   }
 
-  del (id, cb) {
-    if (typeof id === 'object') id = id.id
-    const record = {
-      id,
-      op: Record.DEL
+  writer (name, opts, cb) {
+    if (typeof name === 'function') {
+      cb = name
+      opts = {}
+      name = 'localwriter'
     }
-    this._putRecord(record, cb)
+    if (typeof opts === 'function') {
+      cb = opts
+      opts = {}
+    }
+    opts.name = name
+    this.addFeed(opts, (err, info) => {
+      if (err) return cb(err)
+      cb(null, info.feed)
+    })
   }
 
   // TODO: Make this actual batching ops to the underyling feed.
@@ -256,7 +331,7 @@ class Database extends EventEmitter {
       if (id) ids.push(id)
       if (--pending === 0) {
         if (errs.length) {
-          err = new Error('Batch failed')
+          err = new Error(`Batch failed with ${errs.length} errors. First error: ${errs[0].message}`)
           err.errors = errs
           cb(err)
         } else {
@@ -270,34 +345,9 @@ class Database extends EventEmitter {
   createBatchStream () {
   }
 
-  _putRecord (record, cb) {
-    this.lock(release => {
-      const feed = this.localWriter()
-      record.timestamp = Date.now()
-      this._getLinks(record, (err, links) => {
-        if (err && err.status !== 404) return finish(err)
-        record.links = links || []
-        const buf = Record.encode(record)
-        debug(`[%s] %s id %s links %d`, this._name, record.op === Record.PUT ? 'put' : 'del', record.id, record.links.length)
-        feed.append(buf, finish)
-      })
-
-      function finish (err, id) {
-        release(cb, err, id)
-      }
-    })
-  }
-
   get (req, opts, cb) {
     if (typeof opts === 'function') return this.get(req, {}, opts)
     this.query('records', req, opts, cb)
-  }
-
-  _getLinks (record, cb) {
-    // TODO: Find out if this potentially can block forever.
-    this.kappa.ready('kv', () => {
-      this.view.kv.getLinks(record, cb)
-    })
   }
 
   loadLseq (req, cb) {
@@ -342,66 +392,30 @@ class Database extends EventEmitter {
         return cb(null, this._recordCache.get(cachekey))
       }
 
-      const feed = this.feed(key)
+      const feed = this.getFeed(key)
       if (!feed) return cb(new Error('feed not found'))
 
+      let len
       feed.get(seq, { wait: false }, onget)
+
       function onget (err, buf) {
         if (err) return cb(err)
-        const record = Record.decode(buf, { key, seq, lseq })
-        record[LEN] = buf.length
-        self._recordCache.set(cachekey, record)
-        cb(null, record)
+        if (buf.length) len = buf.length
+
+        const feedType = 'db'
+
+        const message = { key, seq, lseq, value: buf, feedType }
+
+        self.applyMiddleware('onload', [message], finish)
+      }
+
+      function finish (err, message) {
+        if (err) return cb(err)
+        if (len) message[LEN] = len
+        self._recordCache.set(cachekey, message)
+        cb(null, message)
       }
     })
-  }
-
-  feed (key, opts = {}) {
-    if (Buffer.isBuffer(key)) key = key.toString('hex')
-    if (this._feeds[key]) return this._feeds[key]
-    opts.key = key
-    // opts.valueEncoding = Record
-    const feed = this.corestore.get(opts)
-    if (feed) this._feeds[key] = feed
-    return feed
-  }
-
-  // TODO: Deduplicate / error if exists?
-  putSchema (name, schema, cb) {
-    this.ready(() => {
-      const value = this.schemas.parseSchema(name, schema)
-      if (!value) return cb(this.schemas.error)
-      const record = {
-        schema: 'core/schema',
-        value
-      }
-      this.schemas.put(value)
-      this.put(record, cb)
-    })
-  }
-
-  getSchema (name) {
-    return this.schemas.get(name)
-  }
-
-  getSchemas () {
-    return this.schemas.list()
-  }
-
-  putSource (key, opts = {}, cb) {
-    // opts should/can include: { alias }
-    if (typeof opts === 'function') return this.putSource(key, {}, opts)
-    if (Buffer.isBuffer(key)) key = key.toString('hex')
-    const record = {
-      schema: 'core/source',
-      id: key,
-      value: {
-        type: 'kappa-records',
-        key,
-        ...opts
-      }
-    }
-    this.put(record, cb)
   }
 
   createLoadStream (opts = {}) {
@@ -439,17 +453,6 @@ class Database extends EventEmitter {
       })
     })
     return transform
-  }
-
-  loadLink (link, cb) {
-    if (typeof link === 'string') {
-      var [key, seq] = link.split('@')
-      seq = Number(seq)
-    } else {
-      key = link.key
-      seq = link.seq
-    }
-    this.loadRecord({ key, seq }, cb)
   }
 
   createQueryStream (name, args, opts = {}) {
@@ -500,12 +503,7 @@ class Database extends EventEmitter {
     }
 
     const qs = this.createQueryStream(name, args, opts)
-
-    if (cb) {
-      return collect(qs, cb)
-    } else {
-      return qs
-    }
+    return collect(qs, cb)
   }
 
   [inspect] (depth, opts) {

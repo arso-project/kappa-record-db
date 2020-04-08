@@ -1,7 +1,7 @@
 const { runAll } = require('./lib/util')
 const tape = require('tape')
 const collect = require('stream-collector')
-const Database = require('../db')
+const Database = require('..')
 
 const DOC = {
   properties: {

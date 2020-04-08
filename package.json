@@ -2,7 +2,7 @@
   "name": "kappa-record-db",
   "version": "0.6.4",
   "description": "",
-  "main": "db.js",
+  "main": "index.js",
   "keywords": [],
   "author": "Franz Heinzmann (Frando)",
   "license": "GPL-3.0",
