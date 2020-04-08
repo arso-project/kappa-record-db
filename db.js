@@ -47,20 +47,22 @@ module.exports = class Database extends EventEmitter {
     const self = this
     this.opts = opts
 
+    if (opts.swarmMode && Object.values(Mode).indexOf(opts.swarmMode) === -1) {
+      throw new Error('Invalid swarm mode')
+    }
+
     this._name = opts.name
     this._alias = opts.alias
+    this._id = opts.id || uuid()
 
-    this._validate = defaultTrue(opts.validate)
+    this._level = opts.db || memdb()
+    this._feeddb = sub(this._level, 'feeds')
 
-    this.lvl = opts.db || memdb()
-
-    this._feeddb = sub(this.lvl, 'feeds')
-
+    this.kappa = new Kappa()
     this.corestore = opts.corestore || new Corestore(opts.storage || ram)
-
     this.indexer = new Indexer({
       name: this._name,
-      db: sub(this.lvl, 'indexer'),
+      db: sub(this._level, 'indexer'),
       // Load and decode value.
       loadValue (message, next) {
         // Skip first message (header)
@@ -71,9 +73,6 @@ module.exports = class Database extends EventEmitter {
         })
       }
     })
-
-    this.kappa = new Kappa()
-
     this.lock = mutex()
 
     this.defaultFeedType = opts.defaultFeedType || FEED_TYPE
@@ -93,28 +92,23 @@ module.exports = class Database extends EventEmitter {
       max: 4096
     })
 
-    this.opened = false
-    this.middlewares = []
-    this._api = {}
+    this._swarmMode = opts.swarmMode || Mode.ROOTFEED
+    if (this._swarmMode === Mode.MULTIFEED) {
+      this.on('feed', (feed, info) => {
+        mux.forwardLiveFeedAnnouncements(this, feed, info)
+      })
+    }
 
+    this._middlewares = []
+    this._api = {}
     this._feedNames = {}
     this._feeds = []
-
-    this._id = opts.id || opts.name || uuid()
+    this._streams = []
 
     this.open = thunky(this._open.bind(this))
     this.close = thunky(this._close.bind(this))
     this.ready = this.open
-
-    if (opts.swarmMode && Object.values(Mode).indexOf(opts.swarmMode) === -1) {
-      throw new Error('Invalid swarm mode')
-    }
-
-    this._swarmMode = opts.swarmMode || Mode.ROOTFEED
-
-    if (this._swarmMode === Mode.MULTIFEED) {
-      mux.init(this)
-    }
+    this.opened = false
   }
 
   get view () {
@@ -126,7 +120,7 @@ module.exports = class Database extends EventEmitter {
   }
 
   useMiddleware (name, handlers) {
-    this.middlewares.push({ name, handlers })
+    this._middlewares.push({ name, handlers })
     this._api[name] = handlers.api
     if (handlers.views) {
       for (const [name, createView] of Object.entries(handlers.views)) {
@@ -144,7 +138,7 @@ module.exports = class Database extends EventEmitter {
     let hasState = true
     if (state === undefined) hasState = false
 
-    let middlewares = this.middlewares.filter(m => m.handlers[op])
+    let middlewares = this._middlewares.filter(m => m.handlers[op])
     if (!middlewares.length) return cb(null, state)
 
     next(state)
@@ -163,7 +157,7 @@ module.exports = class Database extends EventEmitter {
 
   use (name, createView, opts = {}) {
     const self = this
-    const viewdb = sub(this.lvl, 'view.' + name)
+    const viewdb = sub(this._level, 'view.' + name)
     const view = createView(viewdb, self, opts)
     const sourceOpts = {
       maxBatch: opts.maxBatch || view.maxBatch || DEFAULT_MAX_BATCH,
