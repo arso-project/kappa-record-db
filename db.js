@@ -22,6 +22,7 @@ const { uuid, through, noop, defaultTrue } = require('./lib/util')
 const { Header } = require('./lib/messages')
 
 const LEN = Symbol('record-size')
+const INFO = Symbol('feed-info')
 
 const MAX_CACHE_SIZE = 16777216 // 16M
 const DEFAULT_MAX_BATCH = 500
@@ -49,7 +50,6 @@ module.exports = class Database extends EventEmitter {
     this._feeddb = sub(this.lvl, 'feeds')
 
     this.corestore = opts.corestore || new Corestore(opts.storage || ram)
-    this._feeds = {}
 
     this.indexer = new Indexer({
       name: this._name,
@@ -92,6 +92,8 @@ module.exports = class Database extends EventEmitter {
 
     this._feedNames = {}
     this._feeds = [null]
+
+    this._id = opts.id || uuid()
 
     this.open = thunky(this._open.bind(this))
     this.close = thunky(this._close.bind(this))
@@ -229,21 +231,22 @@ module.exports = class Database extends EventEmitter {
   _addFeedInternally (key, name, type) {
     const feed = this.corestore.get({ key })
     let id = this._feeds.length
-    const info = { feed, key, name, type, id }
-    this._feeds.push(info)
+    feed[INFO] = { name, type, id }
+    this._feeds.push(feed)
     this._feedNames[name] = id
     this._feedNames[key] = id
     this.indexer.add(feed, { scan: true })
     this.emit('feed', feed)
     debug('[%s] add feed key %s name %s type %s', this._name, pretty(feed.key), name, type)
 
-    return info
+    return feed
   }
 
   // Write header to feed.
   // TODO: Delegate this to a feed type handler.
-  _initFeed (info, cb) {
-    const { feed, type } = info
+  _initFeed (feed, cb) {
+    if (!feed[INFO]) return cb(new Error('Invalid feed: has no info'))
+    const { type } = feed[INFO]
     const header = Header.encode({
       type,
       metadata: Buffer.from(JSON.stringify({ encodingVersion: 1 }))
@@ -252,16 +255,16 @@ module.exports = class Database extends EventEmitter {
   }
 
   getFeedInfo (keyOrName) {
-    if (Buffer.isBuffer(keyOrName)) keyOrName = keyOrName.toString('hex')
-    if (this._feedNames[keyOrName] !== undefined) {
-      return this._feeds[this._feedNames[keyOrName]]
-    }
+    const feed = this.getFeed(keyOrName)
+    if (feed && feed[INFO]) return feed[INFO]
     return null
   }
 
   getFeed (keyOrName) {
-    const info = this.getFeedInfo(keyOrName)
-    if (info) return info.feed
+    if (Buffer.isBuffer(keyOrName)) keyOrName = keyOrName.toString('hex')
+    if (this._feedNames[keyOrName] !== undefined) {
+      return this._feeds[this._feedNames[keyOrName]]
+    }
     return null
   }
 
@@ -278,14 +281,14 @@ module.exports = class Database extends EventEmitter {
     if (this.hasFeed(name)) {
       let info = this.getFeedInfo(name)
       if (key && info.key !== key) return cb(new Error('Invalid key for name'))
-      return cb(null, info.feed)
+      return cb(null, this.getFeed(name))
     }
     if (this.hasFeed(key)) {
       let info = this.getFeedInfo(key)
       if (info.name !== name) {
         this._feedNames[name] = info.id
       }
-      return cb(null, info.feed)
+      return cb(null, this.getFeed(key))
     }
 
     if (!type) type = this.defaultFeedType
@@ -299,11 +302,10 @@ module.exports = class Database extends EventEmitter {
     ]
     this._feeddb.batch(ops, err => {
       if (err) return cb(err)
-      const info = this._addFeedInternally(key, name, type)
-      const feed = info.feed
+      const feed = this._addFeedInternally(key, name, type)
       feed.ready(() => {
         if (feed.writable && !feed.length) {
-          this._initFeed(info, err => cb(err, feed))
+          this._initFeed(feed, err => cb(err, feed))
         } else {
           cb(null, feed)
         }
