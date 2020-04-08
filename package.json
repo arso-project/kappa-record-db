@@ -1,6 +1,6 @@
 {
   "name": "kappa-record-db",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "",
   "main": "db.js",
   "keywords": [],
@@ -20,7 +20,7 @@
     "hypercore": "^8.3.0",
     "hypercore-protocol": "^7.7.1",
     "inspect-custom-symbol": "^1.1.1",
-    "kappa-core": "github:Frando/kappa-core#exp-0.2.0",
+    "kappa-core": "github:Frando/kappa-core#exp-0.2.1",
     "kappa-sparse-indexer": "^0.5.1",
     "level-live": "github:Frando/level-live#key-encodings",
     "level-mem": "^5.0.1",
