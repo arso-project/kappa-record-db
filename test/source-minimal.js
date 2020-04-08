@@ -40,7 +40,11 @@ tape('minimal kv test with two sourcees', t => {
       db2 = new Database({ key: db.key, name: 'db2', alias: 'w2', validate: false })
       db2.ready(cb)
     },
-    cb => db.putSource(db2.localKey, { alias: 'w2' }, cb),
+    cb => {
+      const db2localfeed = db2.getFeed('localwriter')
+      const db2localkey = db2localfeed.key
+      db.putSource(db2localkey, { alias: 'w2' }, cb)
+    },
     cb => replicate(db, db2, cb),
     cb => setTimeout(cb, 400),
     cb => db2.put(doc('2rev1', id), cb),

@@ -12,6 +12,7 @@ const mutex = require('mutexify')
 const LRU = require('lru-cache')
 const Bitfield = require('fast-bitfield')
 const thunky = require('thunky')
+const crypto = require('hypercore-crypto')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
@@ -25,6 +26,8 @@ const LEN = Symbol('record-size')
 const MAX_CACHE_SIZE = 16777216 // 16M
 const DEFAULT_MAX_BATCH = 500
 const FEED_TYPE = 'kappa-records'
+const LOCAL_WRITER_NAME = 'localwriter'
+const PRIMARY_FEED_NAME = 'primary'
 
 module.exports = class Database extends EventEmitter {
   static uuid () {
@@ -96,16 +99,16 @@ module.exports = class Database extends EventEmitter {
   }
 
   get key () {
-    return this._primaryFeed && this._primaryFeed.key
+    return this._address
   }
 
   get discoveryKey () {
-    return this._primaryFeed && this._primaryFeed.discoveryKey
+    return crypto.discoveryKey(this._address)
   }
 
-  get localKey () {
-    return this._localWriter && this._localWriter.key
-  }
+  // get localKey () {
+  //   return this._localWriter && this._localWriter.key
+  // }
 
   get view () {
     return this.kappa.view
@@ -178,8 +181,6 @@ module.exports = class Database extends EventEmitter {
     const self = this
     this.corestore.ready(() => {
       this._initFeeds(() => {
-        this._primaryFeed = this.getFeed('primary')
-        this._localWriter = this.getFeed('localwriter')
         this.applyMiddleware('open', finish)
       })
     })
@@ -192,16 +193,27 @@ module.exports = class Database extends EventEmitter {
   }
 
   _initFeeds (cb) {
+    const self = this
     this._openFeeds(() => {
-      this.addFeed({ name: 'primary', key: this.opts.key }, (err, feed) => {
+      if (this.opts.primaryFeed) {
+        this._address = this.opts.key || this.corestore.get().key
+        initPrimaryFeed(this._address)
+      } else {
+        this._address = this.opts.key || crypto.keyPair().publicKey
+        cb()
+      }
+    })
+
+    function initPrimaryFeed (key) {
+      self.addFeed({ name: PRIMARY_FEED_NAME, key }, (err, feed) => {
         if (err) return cb(err)
         if (feed.writable) {
-          this.addFeed({ name: 'localwriter', key: feed.key }, cb)
+          self.addFeed({ name: LOCAL_WRITER_NAME, key }, cb)
         } else {
-          this.addFeed({ name: 'localwriter' }, cb)
+          self.addFeed({ name: LOCAL_WRITER_NAME }, cb)
         }
       })
-    })
+    }
   }
 
   _openFeeds (cb) {
@@ -266,7 +278,7 @@ module.exports = class Database extends EventEmitter {
     if (this.hasFeed(name)) {
       let info = this.getFeedInfo(name)
       if (key && info.key !== key) return cb(new Error('Invalid key for name'))
-      return cb(null, info)
+      return cb(null, info.feed)
     }
     if (this.hasFeed(key)) {
       let info = this.getFeedInfo(key)
@@ -310,9 +322,9 @@ module.exports = class Database extends EventEmitter {
       opts = {}
     }
     opts.name = name
-    this.addFeed(opts, (err, info) => {
+    this.addFeed(opts, (err, feed) => {
       if (err) return cb(err)
-      cb(null, info.feed)
+      cb(null, feed)
     })
   }
 
@@ -516,8 +528,8 @@ module.exports = class Database extends EventEmitter {
     return 'Database(\n' +
           indent + '  key         : ' + stylize((this.key && pretty(this.key)), 'string') + '\n' +
           indent + '  discoveryKey: ' + stylize((this.discoveryKey && pretty(this.discoveryKey)), 'string') + '\n' +
-          indent + '  primaryFeed : ' + fmtFeed(this._primaryFeed) + '\n' +
-          indent + '  localFeed   : ' + fmtFeed(this._localWriter) + '\n' +
+          // indent + '  primaryFeed : ' + fmtFeed(this._primaryFeed) + '\n' +
+          // indent + '  localFeed   : ' + fmtFeed(this._localWriter) + '\n' +
           indent + '  feeds:      : ' + Object.values(this.indexer._feeds).length + '\n' +
           indent + '  opened      : ' + stylize(this.opened, 'boolean') + '\n' +
           indent + '  name        : ' + stylize(this._name, 'string') + '\n' +
