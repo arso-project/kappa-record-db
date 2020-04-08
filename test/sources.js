@@ -78,7 +78,7 @@ tape('replication', async t => {
       db2.put({ schema: 'doc', value: { title: 'ola', body: 'moon', tags: ['green'] }, id: id1 }, cb)
     },
     cb => {
-      const db2localfeed = db2.getFeed('localwriter')
+      const db2localfeed = db2.getFeed()
       const db2localkey = db2localfeed.key
       db.putSource(db2localkey, cb)
     },

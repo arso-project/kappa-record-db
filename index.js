@@ -13,7 +13,8 @@ const Schema = require('./lib/schema')
 const FEED_TYPE = 'kappa-records'
 
 module.exports = function defaultDatabase (opts = {}) {
-  opts.primaryFeed = true
+  opts.swarmMode = 'rootfeed'
+  // opts.swarmMode = 'multifeed'
   const db = new DB(opts)
   db.useMiddleware('db', databaseMiddleware(db))
   db.useMiddleware('sources', sourcesMiddleware(db))

@@ -20,6 +20,7 @@ const Corestore = require('corestore')
 
 const { uuid, through, noop, defaultTrue } = require('./lib/util')
 const { Header } = require('./lib/messages')
+const mux = require('./lib/mux')
 
 const LEN = Symbol('record-size')
 const INFO = Symbol('feed-info')
@@ -27,8 +28,14 @@ const INFO = Symbol('feed-info')
 const MAX_CACHE_SIZE = 16777216 // 16M
 const DEFAULT_MAX_BATCH = 500
 const FEED_TYPE = 'kappa-records'
-const LOCAL_WRITER_NAME = 'localwriter'
-const PRIMARY_FEED_NAME = 'primary'
+
+const LOCAL_WRITER_NAME = '_localwriter'
+const ROOT_FEED_NAME = '_root'
+
+const Mode = {
+  MULTIFEED: 'multifeed',
+  ROOTFEED: 'rootfeed'
+}
 
 module.exports = class Database extends EventEmitter {
   static uuid () {
@@ -93,24 +100,22 @@ module.exports = class Database extends EventEmitter {
     this._feedNames = {}
     this._feeds = []
 
-    this._id = opts.id || uuid()
+    this._id = opts.id || opts.name || uuid()
 
     this.open = thunky(this._open.bind(this))
     this.close = thunky(this._close.bind(this))
     this.ready = this.open
-  }
 
-  get key () {
-    return this._address
-  }
+    if (opts.swarmMode && Object.values(Mode).indexOf(opts.swarmMode) === -1) {
+      throw new Error('Invalid swarm mode')
+    }
 
-  get discoveryKey () {
-    return crypto.discoveryKey(this._address)
-  }
+    this._swarmMode = opts.swarmMode || Mode.ROOTFEED
 
-  // get localKey () {
-  //   return this._localWriter && this._localWriter.key
-  // }
+    if (this._swarmMode === Mode.MULTIFEED) {
+      mux.init(this)
+    }
+  }
 
   get view () {
     return this.kappa.view
@@ -170,7 +175,11 @@ module.exports = class Database extends EventEmitter {
   }
 
   replicate (isInitiator, opts) {
-    return this.corestore.replicate(isInitiator, opts)
+    if (this._swarmMode === Mode.MULTIFEED) {
+      return mux.replicate(this, isInitiator, opts)
+    } else {
+      return this.corestore.replicate(isInitiator, opts)
+    }
   }
 
   _close (cb) {
@@ -197,24 +206,31 @@ module.exports = class Database extends EventEmitter {
   _initFeeds (cb) {
     const self = this
     this._openFeeds(() => {
-      if (this.opts.primaryFeed) {
+      if (this._swarmMode === Mode.ROOTFEED) {
         this._address = this.opts.key || this.corestore.get().key
-        initPrimaryFeed(this._address)
+        initRootFeed(this._address)
       } else {
         this._address = this.opts.key || crypto.keyPair().publicKey
-        cb()
+        finish()
       }
     })
 
-    function initPrimaryFeed (key) {
-      self.addFeed({ name: PRIMARY_FEED_NAME, key }, (err, feed) => {
+    function initRootFeed (key) {
+      self.addFeed({ name: ROOT_FEED_NAME, key }, (err, feed) => {
         if (err) return cb(err)
         if (feed.writable) {
-          self.addFeed({ name: LOCAL_WRITER_NAME, key }, cb)
+          self.addFeed({ name: LOCAL_WRITER_NAME, key }, finish)
         } else {
-          self.addFeed({ name: LOCAL_WRITER_NAME }, cb)
+          finish()
+          // self.addFeed({ name: LOCAL_WRITER_NAME }, finish)
         }
       })
+    }
+
+    function finish () {
+      self.key = self._address
+      self.discoveryKey = crypto.discoveryKey(self.key)
+      cb()
     }
   }
 
@@ -236,7 +252,7 @@ module.exports = class Database extends EventEmitter {
     this._feedNames[name] = id
     this._feedNames[key] = id
     this.indexer.add(feed, { scan: true })
-    this.emit('feed', feed)
+    this.emit('feed', feed, { ...feed[INFO] })
     debug('[%s] add feed key %s name %s type %s', this._name, pretty(feed.key), name, type)
 
     return feed
@@ -261,6 +277,7 @@ module.exports = class Database extends EventEmitter {
   }
 
   getFeed (keyOrName) {
+    if (!keyOrName) keyOrName = LOCAL_WRITER_NAME
     if (Buffer.isBuffer(keyOrName)) keyOrName = keyOrName.toString('hex')
     if (this._feedNames[keyOrName] !== undefined) {
       return this._feeds[this._feedNames[keyOrName]]
@@ -317,7 +334,7 @@ module.exports = class Database extends EventEmitter {
     if (typeof name === 'function') {
       cb = name
       opts = {}
-      name = 'localwriter'
+      name = LOCAL_WRITER_NAME
     }
     if (typeof opts === 'function') {
       cb = opts
@@ -528,20 +545,19 @@ module.exports = class Database extends EventEmitter {
     }
 
     return 'Database(\n' +
-          indent + '  key         : ' + stylize((this.key && pretty(this.key)), 'string') + '\n' +
+          indent + '  address     : ' + stylize((this.key && pretty(this.key)), 'string') + '\n' +
           indent + '  discoveryKey: ' + stylize((this.discoveryKey && pretty(this.discoveryKey)), 'string') + '\n' +
-          // indent + '  primaryFeed : ' + fmtFeed(this._primaryFeed) + '\n' +
-          // indent + '  localFeed   : ' + fmtFeed(this._localWriter) + '\n' +
-          indent + '  feeds:      : ' + Object.values(this.indexer._feeds).length + '\n' +
+          indent + '  swarmMode:    ' + stylize(this._swarmMode) + '\n' +
+          indent + '  feeds:      : ' + stylize(this._feeds.length) + '\n' +
           indent + '  opened      : ' + stylize(this.opened, 'boolean') + '\n' +
           indent + '  name        : ' + stylize(this._name, 'string') + '\n' +
           // indent + '  peers: ' + stylize(this.peers.length, 'number') + '\n' +
           indent + ')'
 
-    function fmtFeed (feed) {
-      if (!feed) return '(undefined)'
-      return stylize(pretty(feed.key), 'string') + ' @ ' + feed.length + ' ' +
-        (feed.writable ? '*' : '')
-    }
+    // function fmtFeed (feed) {
+    //   if (!feed) return '(undefined)'
+    //   return stylize(pretty(feed.key), 'string') + ' @ ' + feed.length + ' ' +
+    //     (feed.writable ? '*' : '')
+    // }
   }
 }
