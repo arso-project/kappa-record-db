@@ -91,7 +91,7 @@ module.exports = class Database extends EventEmitter {
     this._api = {}
 
     this._feedNames = {}
-    this._feeds = [null]
+    this._feeds = []
 
     this._id = opts.id || uuid()
 
