@@ -132,11 +132,19 @@ module.exports = class Database extends EventEmitter {
   applyMiddleware (op, args, cb) {
     if (typeof args === 'function') {
       cb = args
-      args = []
+      args = undefined
     }
-    let [state, ...other] = args
+    let state, other
     let hasState = true
-    if (state === undefined) hasState = false
+    if (Array.isArray(args)) {
+      state = args[0]
+      other = args.slice(1)
+    } else if (args !== undefined) {
+      state = args
+      other = null
+    } else {
+      hasState = false
+    }
 
     let middlewares = this._middlewares.filter(m => m.handlers[op])
     if (!middlewares.length) return cb(null, state)
@@ -146,7 +154,8 @@ module.exports = class Database extends EventEmitter {
     function next (state) {
       let middleware = middlewares.shift()
       if (!middleware) return cb(null, state)
-      if (hasState) middleware.handlers[op](state, ...other, done)
+      if (hasState && other) middleware.handlers[op](state, ...other, done)
+      else if (hasState) middleware.handlers[op](state, done)
       else middleware.handlers[op](done)
       function done (err, state) {
         if (err) return cb(err)
@@ -375,12 +384,12 @@ module.exports = class Database extends EventEmitter {
     this.query('records', req, opts, cb)
   }
 
-  loadLseq (req, cb) {
-    if (req.lseq && req.seq && req.key) {
+  _loadLseq (req, cb) {
+    if (req.lseq !== undefined && req.seq !== undefined && req.key !== undefined) {
       cb(null, req)
       return
     }
-    if (req.lseq && (!req.key || !req.seq)) {
+    if (req.lseq !== undefined) {
       this.indexer.lseqToKeyseq(req.lseq, (err, keyseq) => {
         if (!err && keyseq) {
           req.key = keyseq.key
@@ -390,7 +399,7 @@ module.exports = class Database extends EventEmitter {
       })
       return
     }
-    if (!req.lseq && req.key && typeof req.seq !== 'undefined') {
+    if (req.lseq === undefined && req.seq !== undefined && req.key) {
       this.indexer.keyseqToLseq(req.key, req.seq, (err, lseq) => {
         if (!err && lseq) req.lseq = lseq
         cb(null, req)
@@ -401,20 +410,19 @@ module.exports = class Database extends EventEmitter {
   }
 
   loadRecord (req, cb) {
+    console.log('load', req)
     const self = this
-    this.loadLseq(req, (err, req) => {
-      // TODO: Error out?
+    this._loadLseq(req, (err, req) => {
       if (err) return cb(err)
       let { key, seq, lseq } = req
-      if (!key) return cb(new Error('key is required'))
+      if (!key) return cb(new Error('Key is required'))
       if (Buffer.isBuffer(key)) key = key.toString('hex')
       seq = parseInt(seq)
+      lseq = parseInt(lseq)
       if (seq === 0) return cb(new Error('seq 0 is the header, not a record'))
-      if (typeof seq !== 'number') return cb(new Error('seq is not a number'))
 
-      const cachekey = key + '@' + seq
-      if (this._recordCache.has(cachekey)) {
-        return cb(null, this._recordCache.get(cachekey))
+      if (this._recordCache.has(lseq)) {
+        return cb(null, this._recordCache.get(lseq))
       }
 
       const feed = this.getFeed(key)
@@ -425,19 +433,18 @@ module.exports = class Database extends EventEmitter {
 
       function onget (err, buf) {
         if (err) return cb(err)
-        if (buf.length) len = buf.length
+        if (buf && buf.length) len = buf.length
 
-        const feedType = 'db'
-
+        const feedType = feed[INFO].type
         const message = { key, seq, lseq, value: buf, feedType }
 
-        self.applyMiddleware('onload', [message], finish)
+        self.applyMiddleware('onload', message, finish)
       }
 
       function finish (err, message) {
         if (err) return cb(err)
         if (len) message[LEN] = len
-        self._recordCache.set(cachekey, message)
+        self._recordCache.set(lseq, message)
         cb(null, message)
       }
     })
@@ -457,7 +464,7 @@ module.exports = class Database extends EventEmitter {
     }
 
     const transform = through(function (req, _enc, next) {
-      self.loadLseq(req, (err, req) => {
+      self._loadLseq(req, (err, req) => {
         if (err) this.emit('error', err)
         if (bitfield && bitfield.get(req.lseq)) {
           this.push({ lseq: req.lseq, meta: req.meta })

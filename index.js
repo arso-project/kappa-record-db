@@ -85,7 +85,7 @@ function databaseMiddleware (db, opts = {}) {
 
     onload: function (message, cb) {
       const { key, seq, lseq, value, feedType } = message
-      if (feedType !== 'db') return cb(null, message)
+      if (feedType !== FEED_TYPE) return cb(null, message)
       const record = Record.decode(value, { key, seq, lseq })
       cb(null, record)
     },

@@ -1,6 +1,7 @@
 const tape = require('tape')
 const { runAll, replicate } = require('./lib/util')
 const Database = require('..')
+
 tape('minimal kv test', t => {
   const db = new Database({ name: 'db1', alias: 'w1', validate: false })
   let id
@@ -14,6 +15,8 @@ tape('minimal kv test', t => {
     cb => db.put({ schema: 'doc', value: 'bar', id }, cb),
     cb => db.query('records', { schema: 'doc' }, { waitForSync: true }, (err, records) => {
       t.error(err)
+      t.equal(records.length, 1)
+      t.equal(records[0].value, 'bar')
       cb()
     }),
     cb => t.end()
