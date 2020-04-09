@@ -121,7 +121,13 @@ module.exports = class Database extends EventEmitter {
 
   useMiddleware (name, handlers) {
     this._middlewares.push({ name, handlers })
-    this._api[name] = handlers.api
+    if (handlers.api) {
+      this._api[name] = {}
+      for (let [key, value] of Object.entries(handlers.api)) {
+        if (typeof value === 'function') value = value.bind(handlers.api)
+        this._api[name][key] = value
+      }
+    }
     if (handlers.views) {
       for (const [name, createView] of Object.entries(handlers.views)) {
         this.use(name, createView)
@@ -333,46 +339,30 @@ module.exports = class Database extends EventEmitter {
     })
   }
 
-  writer (name, opts, cb) {
+  writer (name, cb) {
     if (typeof name === 'function') {
       cb = name
-      opts = {}
+      name = LOCAL_WRITER_NAME
+    } else if (name === null) {
       name = LOCAL_WRITER_NAME
     }
-    if (typeof opts === 'function') {
-      cb = opts
-      opts = {}
+    let opts
+    if (name && typeof name === 'object') {
+      opts = name
+    } else {
+      opts = { name }
     }
-    opts.name = name
     this.addFeed(opts, (err, feed) => {
       if (err) return cb(err)
       cb(null, feed)
     })
   }
 
-  // TODO: Make this actual batching ops to the underyling feed.
-  batch (ops, cb) {
-    let pending = 1
-    let ids = []
-    let errs = []
-    for (let op of ops) {
-      if (op.op === 'put') ++pending && this.put(op, done)
-      if (op.op === 'del') ++pending && this.put(op, done)
-    }
-    done()
-    function done (err, id) {
-      if (err) errs.push(err)
-      if (id) ids.push(id)
-      if (--pending === 0) {
-        if (errs.length) {
-          err = new Error(`Batch failed with ${errs.length} errors. First error: ${errs[0].message}`)
-          err.errors = errs
-          cb(err)
-        } else {
-          cb(null, ids)
-        }
-      }
-    }
+  append (writer, message, cb) {
+    this.writer(writer, (err, feed) => {
+      if (err) return cb(err)
+      feed.append(message, cb)
+    })
   }
 
   // TODO.
@@ -410,7 +400,6 @@ module.exports = class Database extends EventEmitter {
   }
 
   loadRecord (req, cb) {
-    console.log('load', req)
     const self = this
     this._loadLseq(req, (err, req) => {
       if (err) return cb(err)

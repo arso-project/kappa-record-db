@@ -22,6 +22,7 @@ module.exports = function defaultDatabase (opts = {}) {
   // Assign for backwards compatibility.
   db.put = db.api.db.put
   db.del = db.api.db.del
+  db.batch = db.api.db.batch
   db.putSchema = db.api.db.putSchema
   db.getSchema = db.api.db.getSchema
   db.getSchemas = db.api.db.getSchemas
@@ -44,6 +45,7 @@ function sourcesMiddleware (db) {
         next()
       }))
     },
+
     api: {
       putSource (key, opts = {}, cb) {
         // opts should/can include: { alias }
@@ -91,38 +93,82 @@ function databaseMiddleware (db, opts = {}) {
     },
 
     api: {
+      batch: function (records, opts, cb) {
+        if (typeof opts === 'function') {
+          cb = opts
+          opts = {}
+        }
+        db.lock(release => {
+          let batch = []
+          let errs = []
+          let ids = []
+          let pending = records.length
+          for (let record of records) {
+            process.nextTick(() => this._prepare(record, opts, done))
+          }
+          function done (err, buf, record) {
+            if (err) errs.push(err)
+            else {
+              batch.push(buf)
+              ids.push(record.id)
+            }
+            if (--pending !== 0) return
+
+            if (errs.length) {
+              let err = new Error(`Batch failed with ${errs.length} errors. First error: ${errs[0].message}`)
+              err.errors = errs
+              release(cb, err)
+              return
+            }
+
+            db.append(null, batch, err => {
+              if (err) return release(cb, err)
+              release(cb, null, ids)
+            })
+          }
+        })
+      },
+
+      _prepare (record, opts, cb) {
+        if (record.op === undefined) record.op = Record.PUT
+        if (record.op === 'put') record.op = Record.PUT
+        if (record.op === 'del') record.op = Record.DEL
+        if (!record.id) record.id = uuid()
+
+        if (record.op === Record.PUT) {
+          record.schema = self.schemas.resolveName(record.schema)
+          let validate = false
+          if (self.opts.validate) validate = true
+          if (typeof opts.validate !== 'undefined') validate = !!opts.validate
+
+          if (validate) {
+            if (!self.schemas.validate(record)) return cb(self.schemas.error)
+          }
+        }
+
+        record.timestamp = Date.now()
+
+        db.view.kv.getLinks(record, (err, links) => {
+          if (err && err.status !== 404) return cb(err)
+          record.links = links || []
+          const buf = Record.encode(record)
+          cb(null, buf, record)
+        })
+      },
+
       put: function (record, opts, cb) {
         if (typeof opts === 'function') {
           cb = opts
           opts = {}
         }
-        if (!opts) opts = {}
         if (!cb) cb = noop
-
-        record.op = Record.PUT
-        if (!record.id) record.id = uuid()
-
-        record.schema = self.schemas.resolveName(record.schema)
-
-        let validate = false
-        if (self.opts.validate) validate = true
-        if (typeof opts.validate !== 'undefined') validate = !!opts.validate
-
-        if (validate) {
-          if (!self.schemas.validate(record)) return cb(self.schemas.error)
-        }
-
+        if (!opts) opts = {}
         db.lock(release => {
-          db.writer((err, feed) => {
+          this._prepare(record, opts, (err, buf, record) => {
             if (err) return release(cb, err)
-            getLinks(record, (err, links) => {
-              if (err && err.status !== 404) return release(cb, err)
-              record.links = links || []
-              const buf = Record.encode(record)
-              feed.append(buf, (err) => {
-                if (err) return release(cb, err)
-                release(cb, null, record.id)
-              })
+            db.append(null, buf, err => {
+              if (err) return release(cb, err)
+              release(cb, null, record.id)
             })
           })
         })
@@ -134,20 +180,7 @@ function databaseMiddleware (db, opts = {}) {
           id,
           op: Record.DEL
         }
-        db.lock(release => {
-          db.writer('db', (err, feed) => {
-            if (err) return release(cb, err)
-            getLinks(record, (err, links) => {
-              if (err && err.status !== 404) return release(cb, err)
-              record.links = links || []
-              const buf = Record.encode(record)
-              feed.append(buf, (err) => {
-                if (err) return release(cb, err)
-                release(cb, null, record.id)
-              })
-            })
-          })
-        })
+        this.put(record, opts, cb)
       },
 
       putSchema: function putSchema (name, schema, cb) {
