@@ -18,7 +18,7 @@ const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
 const Corestore = require('corestore')
 
-const { uuid, through, noop, defaultTrue } = require('./lib/util')
+const { uuid, through, noop } = require('./lib/util')
 const { Header } = require('./lib/messages')
 const mux = require('./lib/mux')
 
@@ -57,6 +57,10 @@ module.exports = class Database extends EventEmitter {
 
     this._level = opts.db || memdb()
     this._feeddb = sub(this._level, 'feeds')
+
+    if (opts.key) {
+      this._address = Buffer.isBuffer(opts.key) ? opts.key : Buffer.from(opts.key, 'hex')
+    }
 
     this.kappa = new Kappa()
     this.corestore = opts.corestore || new Corestore(opts.storage || ram)
@@ -216,30 +220,31 @@ module.exports = class Database extends EventEmitter {
     const self = this
     this._openFeeds(() => {
       if (this._swarmMode === Mode.ROOTFEED) {
-        this._address = this.opts.key || this.corestore.get().key
+        this._address = this._address || this.corestore.get().key
         initRootFeed(this._address)
       } else {
-        this._address = this.opts.key || crypto.keyPair().publicKey
+        this._address = this._address || crypto.keyPair().publicKey
         finish()
       }
     })
 
     function initRootFeed (key) {
       self.addFeed({ name: ROOT_FEED_NAME, key }, (err, feed) => {
-        if (err) return cb(err)
-        if (feed.writable) {
-          self.addFeed({ name: LOCAL_WRITER_NAME, key }, finish)
-        } else {
-          finish()
-          // self.addFeed({ name: LOCAL_WRITER_NAME }, finish)
-        }
+        if (err) return finish(err)
+        feed.ready(() => {
+          if (feed.writable) {
+            self.addFeed({ name: LOCAL_WRITER_NAME, key }, finish)
+          } else {
+            self.addFeed({ name: LOCAL_WRITER_NAME }, finish)
+          }
+        })
       })
     }
 
-    function finish () {
+    function finish (err) {
       self.key = self._address
       self.discoveryKey = crypto.discoveryKey(self.key)
-      cb()
+      cb(err)
     }
   }
 
@@ -248,6 +253,7 @@ module.exports = class Database extends EventEmitter {
     rs.on('data', ({ value }) => {
       value = JSON.parse(value)
       const { name, key, type } = value
+      console.log('openfeed', value)
       this._addFeedInternally(key, name, type)
     })
     rs.on('end', cb)
@@ -256,7 +262,7 @@ module.exports = class Database extends EventEmitter {
   _addFeedInternally (key, name, type) {
     const feed = this.corestore.get({ key })
     let id = this._feeds.length
-    feed[INFO] = { name, type, id }
+    feed[INFO] = { name, type, id, key }
     this._feeds.push(feed)
     this._feedNames[name] = id
     this._feedNames[key] = id
@@ -337,6 +343,28 @@ module.exports = class Database extends EventEmitter {
         }
       })
     })
+  }
+
+  stats (cb) {
+    const stats = { feeds: [] }
+    for (const feed of this._feeds) {
+      stats.feeds.push({
+        key: feed.key.toString('hex'),
+        length: feed.length,
+        byteLength: feed.byteLength,
+        writable: feed.writable,
+        ...feed[INFO],
+        stats: feed.stats
+      })
+    }
+    cb(null, stats)
+    // let pending = Object.values(this.kappa.flows).length
+    // for (const flow of Object.values(this.kappa.flows)) {
+    //   flow._source.subscription.getState((_err, state) => {
+    //     stats.kappa[flow.name] = state
+    //     if (--pending === 0) cb(null, stats)
+    //   })
+    // }
   }
 
   writer (name, cb) {
