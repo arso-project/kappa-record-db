@@ -3,7 +3,7 @@ const pretty = require('pretty-hash')
 
 const DB = require('./db')
 
-const { uuid, sink, noop } = require('./lib/util')
+const { uuid, sink, noop, defaultTrue } = require('./lib/util')
 const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
 const createIndexView = require('./views/indexes')
@@ -13,22 +13,33 @@ const Schema = require('./lib/schema')
 const FEED_TYPE = 'kappa-records'
 
 module.exports = function defaultDatabase (opts = {}) {
-  opts.swarmMode = 'rootfeed'
+  opts.swarmMode = opts.swarmMode || 'rootfeed'
   // opts.swarmMode = 'multifeed'
+  opts.defaultViews = defaultTrue(opts.defaultViews)
+  opts.defaultMiddlewares = defaultTrue(opts.defaultMiddlewares)
+
   const db = new DB(opts)
-  db.useMiddleware('db', databaseMiddleware(db))
-  db.useMiddleware('sources', sourcesMiddleware(db))
 
-  // Assign for backwards compatibility.
-  db.put = db.api.db.put
-  db.del = db.api.db.del
-  db.batch = db.api.db.batch
-  db.putSchema = db.api.db.putSchema
-  db.getSchema = db.api.db.getSchema
-  db.getSchemas = db.api.db.getSchemas
-  db.schemas = db.api.db.schemas
-  db.putSource = db.api.sources.putSource
+  if (opts.defaultViews) {
+    db.use('kv', createKvView)
+    db.use('records', createRecordsView)
+    db.use('index', createIndexView)
+  }
 
+  if (opts.defaultMiddlewares) {
+    db.useMiddleware('db', databaseMiddleware(db))
+    db.useMiddleware('sources', sourcesMiddleware(db))
+
+    // Assign for backwards compatibility.
+    db.put = db.api.db.put
+    db.del = db.api.db.del
+    db.batch = db.api.db.batch
+    db.putSchema = db.api.db.putSchema
+    db.getSchema = db.api.db.getSchema
+    db.getSchemas = db.api.db.getSchemas
+    db.schemas = db.api.db.schemas
+    db.putSource = db.api.sources.putSource
+  }
   return db
 }
 
@@ -88,7 +99,7 @@ function databaseMiddleware (db, opts = {}) {
     onload: function (message, cb) {
       const { key, seq, lseq, value, feedType } = message
       if (feedType !== FEED_TYPE) return cb(null, message)
-      const record = Record.decode(value, { key, seq, lseq })
+      const record = Record.decode(value, { key, seq, lseq, feedType })
       cb(null, record)
     },
 
