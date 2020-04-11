@@ -63,9 +63,9 @@ module.exports = class Stack extends EventEmitter {
       this._address = Buffer.isBuffer(opts.key) ? opts.key : Buffer.from(opts.key, 'hex')
     }
 
-    this.kappa = new Kappa()
+    this.kappa = opts.kappa || new Kappa()
     this.corestore = opts.corestore || new Corestore(opts.storage || ram)
-    this.indexer = new Indexer({
+    this.indexer = opts.indexer || new Indexer({
       name: this._name,
       db: sub(this._level, 'indexer'),
       // Load and decode value.
@@ -326,19 +326,15 @@ module.exports = class Stack extends EventEmitter {
     // }
   }
 
-  writer (name, cb) {
-    if (typeof name === 'function') {
-      cb = name
-      name = LOCAL_WRITER_NAME
-    } else if (name === null) {
-      name = LOCAL_WRITER_NAME
+  writer (opts, cb) {
+    if (typeof opts === 'string') {
+      opts = { name: opts }
+    } else if (typeof opts === 'function') {
+      cb = opts
+      opts = null
     }
-    let opts
-    if (!name) name = LOCAL_WRITER_NAME
-    if (name && typeof name === 'object') {
-      opts = name
-    } else {
-      opts = { name }
+    if (!opts) {
+      opts = { name: LOCAL_WRITER_NAME }
     }
     this.addFeed(opts, (err, feed) => {
       if (err) return cb(err)
