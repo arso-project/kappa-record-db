@@ -170,31 +170,34 @@ module.exports = class Stack extends EventEmitter {
     const self = this
     this._openFeeds(() => {
       if (this._swarmMode === Mode.ROOTFEED) {
-        this.address = this.address || this.corestore.get().key
-        initRootFeed(this.address)
+        initRootFeed(this.address, (err, feed) => {
+          if (err) finish(err)
+          else finish(null, feed.key)
+        })
       } else {
-        this.address = this.address || crypto.keyPair().publicKey
-        finish()
+        finish(null, this.address || crypto.keyPair().publicKey)
       }
     })
 
-    function initRootFeed (key) {
+    function initRootFeed (key, cb) {
       self.addFeed({ name: ROOT_FEED_NAME, key }, (err, feed) => {
-        if (err) return finish(err)
+        if (err) return cb(err)
         feed.ready(() => {
           if (feed.writable) {
-            self.addFeed({ name: LOCAL_WRITER_NAME, key }, finish)
+            self.addFeed({ name: LOCAL_WRITER_NAME, key }, cb)
           } else {
-            self.addFeed({ name: LOCAL_WRITER_NAME }, finish)
+            self.addFeed({ name: LOCAL_WRITER_NAME }, cb)
           }
         })
       })
     }
 
-    function finish (err) {
+    function finish (err, key) {
+      if (err) return cb(err)
+      self.address = key
       self.key = self.address
       self.discoveryKey = crypto.discoveryKey(self.key)
-      cb(err)
+      cb()
     }
   }
 
