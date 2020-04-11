@@ -27,7 +27,7 @@ const INFO = Symbol('feed-info')
 
 const MAX_CACHE_SIZE = 16777216 // 16M
 const DEFAULT_MAX_BATCH = 500
-const FEED_TYPE = 'kappa-records'
+const DEFAULT_FEED_TYPE = 'kappa-records'
 
 const LOCAL_WRITER_NAME = '_localwriter'
 const ROOT_FEED_NAME = '_root'
@@ -80,7 +80,7 @@ module.exports = class Database extends EventEmitter {
     })
     this.lock = mutex()
 
-    this.defaultFeedType = opts.defaultFeedType || FEED_TYPE
+    this.defaultFeedType = opts.defaultFeedType || DEFAULT_FEED_TYPE
 
     // Cache for records. Max cache size can be set as an option.
     // The length for each record is the buffer length of the serialized record,
@@ -104,7 +104,6 @@ module.exports = class Database extends EventEmitter {
       })
     }
 
-    this._middlewares = []
     this._api = {}
     this._feedNames = {}
     this._feeds = []
@@ -122,22 +121,6 @@ module.exports = class Database extends EventEmitter {
 
   get api () {
     return { ...this.kappa.view, ...this._api }
-  }
-
-  useMiddleware (name, handlers) {
-    this._middlewares.push({ name, handlers })
-    if (handlers.api) {
-      this._api[name] = {}
-      for (let [key, value] of Object.entries(handlers.api)) {
-        if (typeof value === 'function') value = value.bind(handlers.api)
-        this._api[name][key] = value
-      }
-    }
-    if (handlers.views) {
-      for (const [name, createView] of Object.entries(handlers.views)) {
-        this.use(name, createView)
-      }
-    }
   }
 
   use (name, createView, opts = {}) {
