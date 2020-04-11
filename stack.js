@@ -4,6 +4,7 @@ const sub = require('subleveldown')
 const memdb = require('level-mem')
 const collect = require('stream-collector')
 const { PassThrough } = require('stream')
+const hypercore = require('hypercore')
 const debug = require('debug')('db')
 const inspect = require('inspect-custom-symbol')
 const pretty = require('pretty-hash')
@@ -28,6 +29,7 @@ const INFO = Symbol('feed-info')
 const MAX_CACHE_SIZE = 16777216 // 16M
 const DEFAULT_MAX_BATCH = 500
 const DEFAULT_FEED_TYPE = 'kappa-records'
+const DEFAULT_NAMESPACE = 'kappa-group'
 
 const LOCAL_WRITER_NAME = '_localwriter'
 const ROOT_FEED_NAME = '_root'
@@ -65,6 +67,10 @@ module.exports = class Stack extends EventEmitter {
 
     this.kappa = opts.kappa || new Kappa()
     this.corestore = opts.corestore || new Corestore(opts.storage || ram)
+    // Patch in a recursive namespace method if we got a namespaced corestore.
+    if (!this.corestore.namespace && this.corestore.store) {
+      this.corestore.namespace = name => this.corestore.store.namespace(this.corestore.name + ':' + name)
+    }
     this.indexer = opts.indexer || new Indexer({
       name: this._name,
       db: sub(this._level, 'indexer'),
@@ -204,15 +210,40 @@ module.exports = class Stack extends EventEmitter {
     rs.on('data', ({ value }) => {
       value = JSON.parse(value)
       const { name, key, type } = value
-      this._addFeedInternally(key, name, type)
+      this._addFeedInternally(key, { name, type })
     })
     rs.on('end', cb)
   }
 
-  _addFeedInternally (key, name, type) {
-    const feed = this.corestore.get({ key })
-    key = feed.key.toString('hex')
+  _createFeed (key, opts) {
+    const { name, persist } = opts
+    let feed
+    if (persist === false) {
+      if (!key) {
+        const keyPair = crypto.keyPair()
+        key = keyPair.key
+        opts.secretKey = keyPair.secretKey
+      }
+      feed = hypercore(ram, key, opts)
+    } else if (!key) {
+      // No key was given, create new feed.
+      feed = this.corestore.namespace(DEFAULT_NAMESPACE + ':' + name).default(opts)
+      key = feed.key
+      this.corestore.get({ ...opts, key })
+    } else {
+      // Key was given, get from corestore.
+      feed = this.corestore.get({ ...opts, key })
+    }
+    return feed
+  }
+
+  _addFeedInternally (key, opts) {
+    const feed = this._createFeed(key, opts)
     feed.on('remote-update', () => this.emit('remote-update'))
+
+    if (!key && feed.key) key = feed.key.toString('hex')
+    if (!key) throw new Error('Missing key for feed')
+    const { name, type } = opts
     let id = this._feeds.length
     feed[INFO] = { name, type, id, key }
     this._feeds.push(feed)
@@ -267,7 +298,8 @@ module.exports = class Stack extends EventEmitter {
   }
 
   addFeed (opts, cb = noop) {
-    let { name, key, type } = opts
+    const self = this
+    let { name, key } = opts
     if (!name && !key) return cb(new Error('Either key or name is required'))
     if (key && Buffer.isBuffer(key)) key = key.toString('hex')
     if (this.hasFeed(name)) {
@@ -283,26 +315,38 @@ module.exports = class Stack extends EventEmitter {
       return cb(null, this.getFeed(key))
     }
 
-    if (!type) type = this.defaultFeedType
-    if (!name) name = uuid()
-    const feed = this._addFeedInternally(key, name, type)
-    key = feed.key.toString('hex')
+    if (!opts.type) opts.type = this.defaultFeedType
+    if (!opts.name) opts.name = uuid()
+    const feed = this._addFeedInternally(key, opts)
 
-    const data = { name, key, type }
+    feed.ready(() => {
+      if (feed.writable && !feed.length) {
+        this._initFeed(feed, finish)
+      } else {
+        finish()
+      }
+    })
+
+    function finish (err) {
+      if (err) return cb(err)
+      const info = {
+        key: feed.key.toString('hex'),
+        name: opts.name,
+        type: opts.type
+      }
+      self._saveFeed(info, err => {
+        cb(err, feed)
+      })
+    }
+  }
+
+  _saveFeed (info, cb) {
+    const { name, key } = info
     const ops = [
       { type: 'put', key: 'name/' + name, value: key },
-      { type: 'put', key: 'key/' + key, value: JSON.stringify(data) }
+      { type: 'put', key: 'key/' + key, value: JSON.stringify(info) }
     ]
-    this._feeddb.batch(ops, err => {
-      if (err) return cb(err)
-      feed.ready(() => {
-        if (feed.writable && !feed.length) {
-          this._initFeed(feed, err => cb(err, feed))
-        } else {
-          cb(null, feed)
-        }
-      })
-    })
+    this._feeddb.batch(ops, cb)
   }
 
   stats (cb = noop) {
