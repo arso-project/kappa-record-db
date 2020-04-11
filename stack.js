@@ -37,7 +37,7 @@ const Mode = {
   ROOTFEED: 'rootfeed'
 }
 
-module.exports = class Database extends EventEmitter {
+module.exports = class Stack extends EventEmitter {
   static uuid () {
     return uuid()
   }

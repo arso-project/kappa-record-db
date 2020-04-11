@@ -1,7 +1,7 @@
 const debug = require('debug')('db')
 const pretty = require('pretty-hash')
 
-const Stack = require('./db')
+const Stack = require('./stack')
 const { uuid, sink, defaultTrue } = require('./lib/util')
 const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
