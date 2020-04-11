@@ -60,7 +60,7 @@ module.exports = class Stack extends EventEmitter {
     this._feeddb = sub(this._level, 'feeds')
 
     if (opts.key) {
-      this._address = Buffer.isBuffer(opts.key) ? opts.key : Buffer.from(opts.key, 'hex')
+      this.address = Buffer.isBuffer(opts.key) ? opts.key : Buffer.from(opts.key, 'hex')
     }
 
     this.kappa = opts.kappa || new Kappa()
@@ -170,10 +170,10 @@ module.exports = class Stack extends EventEmitter {
     const self = this
     this._openFeeds(() => {
       if (this._swarmMode === Mode.ROOTFEED) {
-        this._address = this._address || this.corestore.get().key
-        initRootFeed(this._address)
+        this.address = this.address || this.corestore.get().key
+        initRootFeed(this.address)
       } else {
-        this._address = this._address || crypto.keyPair().publicKey
+        this.address = this.address || crypto.keyPair().publicKey
         finish()
       }
     })
@@ -192,7 +192,7 @@ module.exports = class Stack extends EventEmitter {
     }
 
     function finish (err) {
-      self.key = self._address
+      self.key = self.address
       self.discoveryKey = crypto.discoveryKey(self.key)
       cb(err)
     }
