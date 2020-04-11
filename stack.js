@@ -172,7 +172,7 @@ module.exports = class Stack extends EventEmitter {
       if (this._swarmMode === Mode.ROOTFEED) {
         initRootFeed(this.address, (err, feed) => {
           if (err) finish(err)
-          else finish(null, feed.key)
+          else finish(null, feed.key, feed.discoveryKey)
         })
       } else {
         finish(null, this.address || crypto.keyPair().publicKey)
@@ -182,21 +182,19 @@ module.exports = class Stack extends EventEmitter {
     function initRootFeed (key, cb) {
       self.addFeed({ name: ROOT_FEED_NAME, key }, (err, feed) => {
         if (err) return cb(err)
-        feed.ready(() => {
-          if (feed.writable) {
-            self.addFeed({ name: LOCAL_WRITER_NAME, key }, cb)
-          } else {
-            self.addFeed({ name: LOCAL_WRITER_NAME }, cb)
-          }
-        })
+        if (feed.writable) {
+          self.addFeed({ name: LOCAL_WRITER_NAME, key }, cb)
+        } else {
+          self.addFeed({ name: LOCAL_WRITER_NAME }, cb)
+        }
       })
     }
 
-    function finish (err, key) {
+    function finish (err, key, discoveryKey) {
       if (err) return cb(err)
       self.address = key
-      self.key = self.address
-      self.discoveryKey = crypto.discoveryKey(self.key)
+      self.key = key
+      self.discoveryKey = discoveryKey || crypto.discoveryKey(key)
       cb()
     }
   }
@@ -213,6 +211,7 @@ module.exports = class Stack extends EventEmitter {
 
   _addFeedInternally (key, name, type) {
     const feed = this.corestore.get({ key })
+    key = feed.key.toString('hex')
     feed.on('remote-update', () => this.emit('remote-update'))
     let id = this._feeds.length
     feed[INFO] = { name, type, id, key }
@@ -278,7 +277,7 @@ module.exports = class Stack extends EventEmitter {
     }
     if (this.hasFeed(key)) {
       let info = this.getFeedInfo(key)
-      if (info.name !== name) {
+      if (info && info.name !== name) {
         this._feedNames[name] = info.id
       }
       return cb(null, this.getFeed(key))
@@ -286,7 +285,8 @@ module.exports = class Stack extends EventEmitter {
 
     if (!type) type = this.defaultFeedType
     if (!name) name = uuid()
-    if (!key) key = this.corestore.get().key.toString('hex')
+    const feed = this._addFeedInternally(key, name, type)
+    key = feed.key.toString('hex')
 
     const data = { name, key, type }
     const ops = [
@@ -295,7 +295,6 @@ module.exports = class Stack extends EventEmitter {
     ]
     this._feeddb.batch(ops, err => {
       if (err) return cb(err)
-      const feed = this._addFeedInternally(key, name, type)
       feed.ready(() => {
         if (feed.writable && !feed.length) {
           this._initFeed(feed, err => cb(err, feed))
