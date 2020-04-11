@@ -29,6 +29,7 @@ function doc (value, id) {
 
 tape('minimal kv test with two sourcees', t => {
   const db = new Database({ name: 'db1', alias: 'w1', validate: false })
+  // db.on('remote-update', () => console.log('db1 remote-update'))
   let db2
   let id
   runAll([
@@ -38,14 +39,17 @@ tape('minimal kv test with two sourcees', t => {
       id = _id
       cb()
     }),
+    cb => db.sync(cb),
     cb => db.put(doc('1rev2', id), cb),
     cb => {
       db2 = new Database({ key: db.key, name: 'db2', alias: 'w2', validate: false })
+      // db2.on('remote-update', () => console.log('db2 remote-update'))
       db2.ready(cb)
     },
     cb => db2.writer(cb),
-    cb => replicate(db, db2, cb),
     cb => checkOne(t, db, { schema: 'doc' }, '1rev2', 'init db1 ok', cb),
+    cb => replicate(db, db2, cb),
+    cb => db2.indexer.once('update', cb),
     cb => checkOne(t, db2, { schema: 'doc' }, '1rev2', 'init db2 ok', cb),
     cb => db2.writer(cb),
     cb => {
@@ -53,7 +57,7 @@ tape('minimal kv test with two sourcees', t => {
       const db2localkey = db2localfeed.key
       db.putSource(db2localkey, { alias: 'w2' }, cb)
     },
-    cb => setTimeout(cb, 400),
+    cb => db.sync(cb),
     cb => db2.put(doc('2rev1', id), cb),
     cb => checkOne(t, db, { schema: 'doc' }, '2rev1', 'end db1 ok', cb),
     cb => checkOne(t, db2, { schema: 'doc' }, '2rev1', 'end db2 ok', cb),
@@ -63,7 +67,6 @@ tape('minimal kv test with two sourcees', t => {
 
 function checkOne (t, db, query, value, msg, cb) {
   db.query('records', query, { waitForSync: true }, (err, records) => {
-    console.log(msg, records.map(r => r.value))
     t.error(err, msg + ' (no err)')
     t.equal(records.length, 1, msg + ' (result len)')
     t.equal(records[0].value, value, msg + '(value)')

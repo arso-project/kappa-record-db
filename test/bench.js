@@ -4,7 +4,7 @@ const Database = require('..')
 
 const MAX = 10000
 
-tape('insert many', t => {
+tape.skip('insert many', t => {
   const db = new Database({ name: 'db1', alias: 'w1', validate: false })
   const timer = clock()
   runAll([
@@ -27,7 +27,7 @@ tape('insert many', t => {
       for (let i = 1; i <= MAX; i++) {
         batch.push({ schema: 'doc', value: 'bar' })
       }
-      db.api.db.batch(batch, cb)
+      db.batch(batch, cb)
     },
 
     cb => logtime(cb, timer, 'inserted ' + MAX),

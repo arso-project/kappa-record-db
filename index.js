@@ -1,9 +1,8 @@
 const debug = require('debug')('db')
 const pretty = require('pretty-hash')
 
-const DB = require('./db')
-
-const { uuid, sink, noop, defaultTrue } = require('./lib/util')
+const Stack = require('./db')
+const { uuid, sink, defaultTrue } = require('./lib/util')
 const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
 const createIndexView = require('./views/indexes')
@@ -11,219 +10,187 @@ const Record = require('./lib/record')
 const Schema = require('./lib/schema')
 
 const FEED_TYPE = 'kappa-records'
+const SCHEMA_SOURCE = 'core/source'
 
-module.exports = function defaultDatabase (opts = {}) {
+const bind = (obj, fn) => fn.bind(obj)
+
+module.exports = defaultDatabase
+module.exports.Stack = Stack
+
+function defaultDatabase (opts = {}) {
   opts.swarmMode = opts.swarmMode || 'rootfeed'
   // opts.swarmMode = 'multifeed'
-  opts.defaultViews = defaultTrue(opts.defaultViews)
-  opts.defaultMiddlewares = defaultTrue(opts.defaultMiddlewares)
+  opts.defaultDatabase = defaultTrue(opts.defaultMiddlewares)
 
-  const db = new DB(opts)
+  const stack = new Stack(opts)
+  const db = new Database(stack, opts)
 
-  if (opts.defaultViews) {
-    db.use('kv', createKvView)
-    db.use('records', createRecordsView)
-    db.use('index', createIndexView)
-  }
+  stack.put = bind(db, db.put)
+  stack.del = bind(db, db.del)
+  stack.putSchema = bind(db, db.putSchema)
+  stack.getSchema = bind(db, db.getSchema)
+  stack.getSchemas = bind(db, db.getSchemas)
+  stack.putSource = bind(db, db.putSource)
+  stack.db = db
 
-  if (opts.defaultMiddlewares) {
-    db.useMiddleware('db', databaseMiddleware(db))
-    db.useMiddleware('sources', sourcesMiddleware(db))
-
-    // Assign for backwards compatibility.
-    db.put = db.api.db.put
-    db.del = db.api.db.del
-    db.batch = db.api.db.batch
-    db.putSchema = db.api.db.putSchema
-    db.getSchema = db.api.db.getSchema
-    db.getSchemas = db.api.db.getSchemas
-    db.schemas = db.api.db.schemas
-    db.putSource = db.api.sources.putSource
-  }
-  return db
+  return stack
 }
 
-function sourcesMiddleware (db) {
-  return {
-    open (cb) {
-      const qs = db.createQueryStream('records', { schema: 'core/source' }, { live: true })
-      qs.once('sync', cb)
-      qs.pipe(sink((record, next) => {
-        const { alias, key, type } = record.value
-        if (type !== FEED_TYPE) return next()
-        debug(`[%s] source:add key %s alias %s type %s`, db._name, pretty(key), alias, type)
-        db.addFeed({ key })
-        next()
-      }))
-    },
-
-    api: {
-      putSource (key, opts = {}, cb) {
-        // opts should/can include: { alias }
-        if (typeof opts === 'function') {
-          cb = opts
-          opts = {}
-        }
-        if (Buffer.isBuffer(key)) key = key.toString('hex')
-        const record = {
-          schema: 'core/source',
-          id: key,
-          value: {
-            type: 'kappa-records',
-            key,
-            ...opts
-          }
-        }
-        db.put(record, cb)
+class Database {
+  constructor (stack, opts) {
+    this.stack = stack
+    this.opts = opts
+    this.sources = new Sources(stack, {
+      onput: (...args) => this.put(...args),
+      onsource: (...args) => {
+        this.stack.addFeed(...args)
       }
+    })
+    this.schemas = new Schema()
+
+    this.stack.handlers = {
+      onload: this._onload.bind(this),
+      onappend: this._onappend.bind(this),
+      open: this._onopen.bind(this)
     }
-  }
-}
-
-function databaseMiddleware (db, opts = {}) {
-  const schemas = new Schema({ key: db.key })
-  const self = this
-  self.schemas = schemas
-  self.opts = opts
-  const databaseMiddleware = {
-    open: function (cb) {
-      self.schemas.open(db, cb)
-    },
-
-    views: {
-      kv: createKvView,
-      records: createRecordsView,
-      index: createIndexView
-    },
-
-    onload: function (message, cb) {
-      const { key, seq, lseq, value, feedType } = message
-      if (feedType !== FEED_TYPE) return cb(null, message)
-      const record = Record.decode(value, { key, seq, lseq, feedType })
-      cb(null, record)
-    },
-
-    api: {
-      batch: function (records, opts, cb) {
-        if (typeof opts === 'function') {
-          cb = opts
-          opts = {}
-        }
-        db.lock(release => {
-          let batch = []
-          let errs = []
-          let ids = []
-          let pending = records.length
-          for (let record of records) {
-            process.nextTick(() => this._prepare(record, opts, done))
-          }
-          function done (err, buf, record) {
-            if (err) errs.push(err)
-            else {
-              batch.push(buf)
-              ids.push(record.id)
-            }
-            if (--pending !== 0) return
-
-            if (errs.length) {
-              let err = new Error(`Batch failed with ${errs.length} errors. First error: ${errs[0].message}`)
-              err.errors = errs
-              release(cb, err)
-              return
-            }
-
-            db.append(null, batch, err => {
-              if (err) return release(cb, err)
-              release(cb, null, ids)
-            })
-          }
-        })
-      },
-
-      _prepare (record, opts, cb) {
-        if (record.op === undefined) record.op = Record.PUT
-        if (record.op === 'put') record.op = Record.PUT
-        if (record.op === 'del') record.op = Record.DEL
-        if (!record.id) record.id = uuid()
-
-        if (record.op === Record.PUT) {
-          record.schema = self.schemas.resolveName(record.schema)
-          let validate = false
-          if (self.opts.validate) validate = true
-          if (typeof opts.validate !== 'undefined') validate = !!opts.validate
-
-          if (validate) {
-            if (!self.schemas.validate(record)) return cb(self.schemas.error)
-          }
-        }
-
-        record.timestamp = Date.now()
-
-        db.view.kv.getLinks(record, (err, links) => {
-          if (err && err.status !== 404) return cb(err)
-          record.links = links || []
-          const buf = Record.encode(record)
-          cb(null, buf, record)
-        })
-      },
-
-      put: function (record, opts, cb) {
-        if (typeof opts === 'function') {
-          cb = opts
-          opts = {}
-        }
-        if (!cb) cb = noop
-        if (!opts) opts = {}
-        db.lock(release => {
-          this._prepare(record, opts, (err, buf, record) => {
-            if (err) return release(cb, err)
-            db.append(null, buf, err => {
-              if (err) return release(cb, err)
-              release(cb, null, record.id)
-            })
-          })
-        })
-      },
-
-      del: function (id, opts, cb) {
-        if (typeof id === 'object') id = id.id
-        const record = {
-          id,
-          op: Record.DEL
-        }
-        this.put(record, opts, cb)
-      },
-
-      putSchema: function putSchema (name, schema, cb) {
-        db.ready(() => {
-          const value = self.schemas.parseSchema(name, schema)
-          if (!value) return cb(self.schemas.error)
-          const record = {
-            schema: 'core/schema',
-            value
-          }
-          self.schemas.put(value)
-          db.put(record, cb)
-        })
-      },
-
-      getSchema: function getSchema (name) {
-        return self.schemas.get(name)
-      },
-
-      getSchemas: function () {
-        return self.schemas.list()
-      },
-      schemas
-    }
+    this.stack.use('kv', createKvView)
+    this.stack.use('records', createRecordsView, { schemas: this.schemas })
+    this.stack.use('index', createIndexView, { schemas: this.schemas })
   }
 
-  return databaseMiddleware
-
-  function getLinks (record, cb) {
-    // TODO: Find out if this potentially can block forever.
-    db.kappa.ready('kv', () => {
-      db.view.kv.getLinks(record, cb)
+  _onopen (cb) {
+    this.schemas.open(this.stack, () => {
+      this.sources.open(cb)
     })
   }
+
+  _onload (message, cb) {
+    if (message.feedType !== FEED_TYPE) return cb(null, message)
+    const { key, seq, lseq, value, feedType } = message
+    const record = Record.decode(value, { key, seq, lseq, feedType })
+    cb(null, record)
+  }
+
+  _onappend (record, opts, cb) {
+    if (opts.feedType !== FEED_TYPE) return cb(null, record)
+    if (record.op === undefined) record.op = Record.PUT
+    if (record.op === 'put') record.op = Record.PUT
+    if (record.op === 'del') record.op = Record.DEL
+    if (!record.id) record.id = uuid()
+
+    if (record.op === Record.PUT) {
+      record.schema = this.schemas.resolveName(record.schema)
+      let validate = false
+      if (this.opts.validate) validate = true
+      if (typeof opts.validate !== 'undefined') validate = !!opts.validate
+
+      if (validate) {
+        if (!this.schemas.validate(record)) return cb(this.schemas.error)
+      }
+    }
+
+    record.timestamp = Date.now()
+
+    this.stack.view.kv.getLinks(record, (err, links) => {
+      if (err && err.status !== 404) return cb(err)
+      record.links = links || []
+      const buf = Record.encode(record)
+      cb(null, buf, record.id)
+    })
+  }
+
+  put (record, opts, cb) {
+    record.op = Record.PUT
+    this.stack.append(record, opts, cb)
+  }
+
+  del (id, opts, cb) {
+    if (typeof id === 'object') id = id.id
+    const record = {
+      id,
+      op: Record.DEL
+    }
+    this.stack.append(record, opts, cb)
+  }
+
+  putSchema (name, schema, cb) {
+    this.stack.ready(() => {
+      const value = this.schemas.parseSchema(name, schema)
+      if (!value) return cb(this.schemas.error)
+      const record = {
+        schema: 'core/schema',
+        value
+      }
+      this.schemas.put(value)
+      this.stack.put(record, cb)
+    })
+  }
+
+  getSchema (name) {
+    return this.schemas.get(name)
+  }
+
+  getSchemas () {
+    return this.schemas.list()
+  }
+
+  putSource (key, info = {}, cb) {
+    // opts should/can include: { alias }
+    if (typeof info === 'function') {
+      cb = info
+      info = {}
+    }
+    if (Buffer.isBuffer(key)) key = key.toString('hex')
+    this.put({
+      schema: SCHEMA_SOURCE,
+      id: key,
+      value: {
+        type: FEED_TYPE,
+        key,
+        ...info
+      }
+    }, cb)
+  }
 }
+
+class Sources {
+  constructor (stack, handlers) {
+    this.stack = stack
+    this.handlers = handlers
+  }
+
+  open (cb) {
+    const qs = this.stack.createQueryStream('records', { schema: 'core/source' }, { live: true })
+    qs.once('sync', cb)
+    qs.pipe(sink((record, next) => {
+      const { alias, key, type } = record.value
+      if (type !== FEED_TYPE) return next()
+      debug(`[%s] source:add key %s alias %s type %s`, this.stack._name, pretty(key), alias, type)
+      this.stack.addFeed({ alias, key, type })
+      // this.handlers.onsource(record.value)
+      // this.stack.addFeed({ alias, key, type })
+      next()
+    }))
+  }
+
+  put (key, opts = {}, cb) {
+    // opts should/can include: { alias }
+    if (typeof opts === 'function') {
+      cb = opts
+      opts = {}
+    }
+    if (Buffer.isBuffer(key)) key = key.toString('hex')
+    const record = {
+      schema: 'core/source',
+      id: key,
+      value: {
+        type: FEED_TYPE,
+        key,
+        ...opts
+      }
+    }
+    this.handlers.onput(record, cb)
+  }
+}
+
+module.exports.Database = Database

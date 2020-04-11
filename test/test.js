@@ -44,7 +44,7 @@ tape('basics', async t => {
     cb => db.putSchema('doc', docSchema, cb),
     cb => db.put({ schema: 'doc', value: { title: 'hello', body: 'world', tags: ['red'] } }, (err, id) => {
       t.error(err)
-      console.log('put', id)
+      // console.log('put', id)
       id1 = id
       process.nextTick(cb)
     }),
@@ -58,7 +58,7 @@ tape('basics', async t => {
       // db.kappa.ready('records', () => {
       setTimeout(() => {
         db.query('records', { schema: 'doc' }, (err, records) => {
-          console.log('oi')
+          // console.log('oi')
           t.error(err)
           t.equal(records.length, 2, 'records get len')
           t.deepEqual(records.map(r => r.value.title).sort(), ['hello', 'hi'], 'record get vals')

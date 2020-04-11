@@ -10,7 +10,8 @@ const INDEXES = {
   si: ['schema', 'id', 'key']
 }
 
-module.exports = function recordView (lvl, db) {
+module.exports = function createReordView (lvl, db, opts) {
+  const schemas = opts.schemas
   return {
     map (records, next) {
       mapRecordsIntoLevelDB({
@@ -24,7 +25,7 @@ module.exports = function recordView (lvl, db) {
         if (typeof req === 'string') req = { id: req }
         let { schema, id, key, seq, all } = req
 
-        if (schema) schema = db.schemas.resolveName(schema)
+        if (schema) schema = schemas.resolveName(schema)
 
         let filter
         if (all) {

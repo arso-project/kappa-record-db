@@ -16,6 +16,10 @@ exports.replicate = function replicate (a, b, opts, cb) {
   if (typeof opts === 'function') return replicate(a, b, null, opts)
   if (!opts) opts = { live: true }
   const stream = a.replicate(true, opts)
+  b.once('remote-update', () => {
+    // setImmediate(() => setTimeout(cb, 10))
+    cb()
+  })
   stream.pipe(b.replicate(false, opts)).pipe(stream)
-  setImmediate(cb)
+  // setImmediate(cb)
 }

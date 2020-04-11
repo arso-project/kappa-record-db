@@ -46,6 +46,7 @@ module.exports = class Database extends EventEmitter {
     super()
     const self = this
     this.opts = opts
+    this.handlers = opts.handlers
 
     if (opts.swarmMode && Object.values(Mode).indexOf(opts.swarmMode) === -1) {
       throw new Error('Invalid swarm mode')
@@ -139,52 +140,17 @@ module.exports = class Database extends EventEmitter {
     }
   }
 
-  applyMiddleware (op, args, cb) {
-    if (typeof args === 'function') {
-      cb = args
-      args = undefined
-    }
-    let state, other
-    let hasState = true
-    if (Array.isArray(args)) {
-      state = args[0]
-      other = args.slice(1)
-    } else if (args !== undefined) {
-      state = args
-      other = null
-    } else {
-      hasState = false
-    }
-
-    let middlewares = this._middlewares.filter(m => m.handlers[op])
-    if (!middlewares.length) return cb(null, state)
-
-    next(state)
-
-    function next (state) {
-      let middleware = middlewares.shift()
-      if (!middleware) return cb(null, state)
-      if (hasState && other) middleware.handlers[op](state, ...other, done)
-      else if (hasState) middleware.handlers[op](state, done)
-      else middleware.handlers[op](done)
-      function done (err, state) {
-        if (err) return cb(err)
-        process.nextTick(next, state)
-      }
-    }
-  }
-
   use (name, createView, opts = {}) {
     const self = this
     const viewdb = sub(this._level, 'view.' + name)
-    const view = createView(viewdb, self, opts)
+    const view = createView(viewdb, opts.context || self, opts)
     const sourceOpts = {
       maxBatch: opts.maxBatch || view.maxBatch || DEFAULT_MAX_BATCH,
       filter (messages, next) {
         next(messages.filter(msg => msg.seq !== 0))
       }
     }
-    this.kappa.use(name, this.indexer.source(sourceOpts), view)
+    this.kappa.use(name, this.indexer.source(sourceOpts), view, opts)
   }
 
   replicate (isInitiator, opts) {
@@ -205,7 +171,8 @@ module.exports = class Database extends EventEmitter {
     const self = this
     this.corestore.ready(() => {
       this._initFeeds(() => {
-        this.applyMiddleware('open', finish)
+        if (this.handlers.open) this.handlers.open(finish)
+        else finish()
       })
     })
 
@@ -253,7 +220,6 @@ module.exports = class Database extends EventEmitter {
     rs.on('data', ({ value }) => {
       value = JSON.parse(value)
       const { name, key, type } = value
-      console.log('openfeed', value)
       this._addFeedInternally(key, name, type)
     })
     rs.on('end', cb)
@@ -261,6 +227,7 @@ module.exports = class Database extends EventEmitter {
 
   _addFeedInternally (key, name, type) {
     const feed = this.corestore.get({ key })
+    feed.on('remote-update', () => this.emit('remote-update'))
     let id = this._feeds.length
     feed[INFO] = { name, type, id, key }
     this._feeds.push(feed)
@@ -306,6 +273,14 @@ module.exports = class Database extends EventEmitter {
     return false
   }
 
+  getRootFeed () {
+    return this.getFeed(ROOT_FEED_NAME)
+  }
+
+  getDefaultLocalFeed () {
+    return this.getFeed(LOCAL_WRITER_NAME)
+  }
+
   addFeed (opts, cb = noop) {
     let { name, key, type } = opts
     if (!name && !key) return cb(new Error('Either key or name is required'))
@@ -345,7 +320,7 @@ module.exports = class Database extends EventEmitter {
     })
   }
 
-  stats (cb) {
+  stats (cb = noop) {
     const stats = { feeds: [] }
     for (const feed of this._feeds) {
       stats.feeds.push({
@@ -358,6 +333,7 @@ module.exports = class Database extends EventEmitter {
       })
     }
     cb(null, stats)
+    return stats
     // let pending = Object.values(this.kappa.flows).length
     // for (const flow of Object.values(this.kappa.flows)) {
     //   flow._source.subscription.getState((_err, state) => {
@@ -375,6 +351,7 @@ module.exports = class Database extends EventEmitter {
       name = LOCAL_WRITER_NAME
     }
     let opts
+    if (!name) name = LOCAL_WRITER_NAME
     if (name && typeof name === 'object') {
       opts = name
     } else {
@@ -386,15 +363,72 @@ module.exports = class Database extends EventEmitter {
     })
   }
 
-  append (writer, message, cb) {
-    this.writer(writer, (err, feed) => {
-      if (err) return cb(err)
-      feed.append(message, cb)
+  append (message, opts, cb) {
+    const self = this
+    if (typeof opts === 'function') {
+      cb = opts
+      opts = {}
+    }
+    if (!opts) opts = {}
+    if (!cb) cb = noop
+
+    this.lock(release => {
+      self.writer(opts.feed, (err, feed) => {
+        if (err) return release(cb, err)
+        opts.feedType = feed[INFO].type
+        if (this.handlers.onappend) this.handlers.onappend(message, opts, append)
+        else append(null, message, {})
+
+        function append (err, buf, result) {
+          if (err) return release(cb, err)
+          feed.append(buf, err => {
+            if (err) return release(cb, err)
+            release(cb, err, result)
+          })
+        }
+      })
     })
   }
 
-  // TODO.
-  createBatchStream () {
+  batch (messages, opts, cb) {
+    if (typeof opts === 'function') {
+      cb = opts
+      opts = {}
+    }
+    const self = this
+    this.lock(release => {
+      let batch = []
+      let errs = []
+      let results = []
+      let pending = messages.length
+      self.writer(opts.feed, (err, feed) => {
+        if (err) return release(cb, err)
+        opts.feedType = feed[INFO].type
+        for (let message of messages) {
+          process.nextTick(() => {
+            if (this.handlers.onappend) this.handlers.onappend(message, opts, done)
+            else done(null, message, {})
+          })
+        }
+        function done (err, buf, result) {
+          if (err) errs.push(err)
+          else {
+            batch.push(buf)
+            results.push(result)
+          }
+          if (--pending !== 0) return
+
+          if (errs.length) {
+            let err = new Error(`Batch failed with ${errs.length} errors. First error: ${errs[0].message}`)
+            err.errors = errs
+            release(cb, err)
+            return
+          }
+
+          feed.append(batch, err => release(cb, err, results))
+        }
+      })
+    })
   }
 
   get (req, opts, cb) {
@@ -428,6 +462,10 @@ module.exports = class Database extends EventEmitter {
   }
 
   loadRecord (req, cb) {
+    this.loadValue(req, cb)
+  }
+
+  loadValue (req, cb) {
     const self = this
     this._loadLseq(req, (err, req) => {
       if (err) return cb(err)
@@ -455,7 +493,8 @@ module.exports = class Database extends EventEmitter {
         const feedType = feed[INFO].type
         const message = { key, seq, lseq, value: buf, feedType }
 
-        self.applyMiddleware('onload', message, finish)
+        if (self.handlers.onload) self.handlers.onload(message, finish)
+        else finish(null, message)
       }
 
       function finish (err, message) {

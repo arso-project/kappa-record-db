@@ -7,7 +7,8 @@ const CHAR_END = '\uffff'
 const CHAR_SPLIT = '\u0000'
 const CHAR_START = '\u0001'
 
-module.exports = function indexedView (lvl, db) {
+module.exports = function indexedView (lvl, db, opts) {
+  const schemas = opts.schemas
   return {
     name: 'indexes',
     map (records, next) {
@@ -22,7 +23,7 @@ module.exports = function indexedView (lvl, db) {
         if (!opts.schema || !opts.prop) {
           proxy.destroy(new Error('schema and prop are required.'))
         } else {
-          opts.schema = db.schemas.resolveName(opts.schema)
+          opts.schema = schemas.resolveName(opts.schema)
           if (!opts.schema) return proxy.destroy(new Error('Invalid schema name.'))
           const lvlopts = queryOptsToLevelOpts(opts)
           lvl.createReadStream(lvlopts).pipe(proxy)

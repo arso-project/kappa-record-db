@@ -36,8 +36,8 @@ tape('replication', async t => {
     },
     cb => db2.ready(cb),
     cb => {
-      console.log('DB', db)
-      console.log('DB2', db2)
+      // console.log('DB', db)
+      // console.log('DB2', db2)
       cb()
     },
     cb => db.putSchema('doc', DOC, cb),
@@ -61,9 +61,9 @@ tape('replication', async t => {
       setTimeout(cb, 200)
     },
     cb => {
-      console.log('After replication')
-      console.log('DB', db)
-      console.log('DB2', db2)
+      // console.log('After replication')
+      // console.log('DB', db)
+      // console.log('DB2', db2)
       db2.query('records', { schema: 'doc' }, (err, records) => {
         t.error(err)
         t.equal(records.length, 1)
@@ -85,9 +85,9 @@ tape('replication', async t => {
     cb => setTimeout(cb, 500),
     cb => db.kappa.ready('records', cb),
     cb => {
-      console.log('After putSource')
-      console.log('DB', db)
-      console.log('DB2', db2)
+      // console.log('After putSource')
+      // console.log('DB', db)
+      // console.log('DB2', db2)
       db.query('records', { schema: 'doc' }, (err, records) => {
         t.error(err)
         t.equal(records.length, 2, 'records get len')
