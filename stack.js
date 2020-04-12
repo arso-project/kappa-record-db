@@ -75,12 +75,10 @@ module.exports = class Stack extends EventEmitter {
       name: this._name,
       db: sub(this._level, 'indexer'),
       // Load and decode value.
-      loadValue (message, next) {
-        // Skip first message (header)
-        if (message.seq === 0) return next(null)
-        self.loadRecord(message, (err, record) => {
-          if (err) return next(message)
-          next(record)
+      loadValue (req, next) {
+        self.load(req, (err, message) => {
+          if (err) return next(null)
+          next(message)
         })
       }
     })
@@ -456,79 +454,79 @@ module.exports = class Stack extends EventEmitter {
     })
   }
 
-  get (req, opts, cb) {
-    if (typeof opts === 'function') return this.get(req, {}, opts)
-    this.query('records', req, opts, cb)
+  get (keyOrName, seq, opts, cb) {
+    if (typeof opts === 'function') {
+      cb = opts
+      opts = {}
+    }
+    if (opts.wait === undefined) opts.wait = false
+    const feed = this.getFeed(keyOrName)
+    if (!feed) return cb(new Error('Feed does not exist'))
+    feed.get(seq, opts, (err, value) => {
+      if (err) return cb(err)
+      const { key, type: feedType } = feed[INFO]
+      const message = { key, seq, value, feedType }
+      if (this.handlers.onload) this.handlers.onload(message, cb)
+      else cb(null, message)
+    })
   }
 
-  _loadLseq (req, cb) {
-    if (req.lseq !== undefined && req.seq !== undefined && req.key !== undefined) {
-      cb(null, req)
-      return
+  load (req, opts, cb) {
+    if (typeof opts === 'function') {
+      cb = opts
+      opts = {}
     }
-    if (req.lseq !== undefined) {
+    const self = this
+    this._resolveRequest(req, (err, req) => {
+      if (err) return cb(err)
+      // TODO: Keep this?
+      if (req.seq === 0) return cb(new Error('seq 0 is the header, not a record'))
+
+      if (this._recordCache.has(req.lseq)) {
+        return cb(null, this._recordCache.get(req.lseq))
+      }
+
+      this.get(req.key, req.seq, opts, finish)
+
+      function finish (err, message) {
+        if (err) return cb(err)
+        message.lseq = req.lseq
+        self._recordCache.set(req.lseq, message)
+        if (req.meta) {
+          message = { ...message, meta: req.meta }
+        }
+        cb(null, message)
+      }
+    })
+  }
+
+  _resolveRequest (req, cb) {
+    if (!empty(req.lseq) && empty(req.seq)) {
       this.indexer.lseqToKeyseq(req.lseq, (err, keyseq) => {
         if (!err && keyseq) {
           req.key = keyseq.key
           req.seq = keyseq.seq
         }
-        cb(null, req)
+        finish(req)
       })
-      return
-    }
-    if (req.lseq === undefined && req.seq !== undefined && req.key) {
+    } else if (empty(req.lseq)) {
       this.indexer.keyseqToLseq(req.key, req.seq, (err, lseq) => {
         if (!err && lseq) req.lseq = lseq
-        cb(null, req)
+        finish(req)
       })
-      return
+    } else finish(req)
+
+    function finish (req) {
+      if (empty(req.key) || empty(req.seq)) return cb(new Error('Invalid get request'))
+      req.seq = parseInt(req.seq)
+      if (!empty(req.lseq)) req.lseq = parseInt(req.lseq)
+      if (Buffer.isBuffer(req.key)) req.key = req.key.toString('hex')
+      cb(null, req)
     }
-    cb(null, req)
   }
 
   loadRecord (req, cb) {
-    this.loadValue(req, cb)
-  }
-
-  loadValue (req, cb) {
-    const self = this
-    this._loadLseq(req, (err, req) => {
-      if (err) return cb(err)
-      let { key, seq, lseq } = req
-      if (!key) return cb(new Error('Key is required'))
-      if (Buffer.isBuffer(key)) key = key.toString('hex')
-      seq = parseInt(seq)
-      lseq = parseInt(lseq)
-      if (seq === 0) return cb(new Error('seq 0 is the header, not a record'))
-
-      if (this._recordCache.has(lseq)) {
-        return cb(null, this._recordCache.get(lseq))
-      }
-
-      const feed = this.getFeed(key)
-      if (!feed) return cb(new Error('feed not found'))
-
-      let len
-      feed.get(seq, { wait: false }, onget)
-
-      function onget (err, buf) {
-        if (err) return cb(err)
-        if (buf && buf.length) len = buf.length
-
-        const feedType = feed[INFO].type
-        const message = { key, seq, lseq, value: buf, feedType }
-
-        if (self.handlers.onload) self.handlers.onload(message, finish)
-        else finish(null, message)
-      }
-
-      function finish (err, message) {
-        if (err) return cb(err)
-        if (len) message[LEN] = len
-        self._recordCache.set(lseq, message)
-        cb(null, message)
-      }
-    })
+    this.load(req, cb)
   }
 
   createLoadStream (opts = {}) {
@@ -536,7 +534,7 @@ module.exports = class Stack extends EventEmitter {
 
     const { cacheid } = opts
 
-    let bitfield = null
+    let bitfield
     if (cacheid) {
       if (!this._queryBitfields.has(cacheid)) {
         this._queryBitfields.set(cacheid, Bitfield())
@@ -545,22 +543,16 @@ module.exports = class Stack extends EventEmitter {
     }
 
     const transform = through(function (req, _enc, next) {
-      self._loadLseq(req, (err, req) => {
-        if (err) this.emit('error', err)
+      self._resolveRequest(req, (err, req) => {
+        if (err) return next()
         if (bitfield && bitfield.get(req.lseq)) {
           this.push({ lseq: req.lseq, meta: req.meta })
-          next()
-          return
+          return next()
         }
-        self.loadRecord(req, (err, record) => {
-          if (err) this.emit('error', err)
-          if (!record) return next()
-          const recordClone = Object.assign({}, record)
-          if (req.meta) recordClone.meta = req.meta
-          if (bitfield) {
-            bitfield.set(req.lseq, 1)
-          }
-          this.push(recordClone)
+        self.load(req, (err, message) => {
+          if (err) return next()
+          if (bitfield) bitfield.set(req.lseq, 1)
+          this.push(message)
           next()
         })
       })
@@ -633,13 +625,10 @@ module.exports = class Stack extends EventEmitter {
           indent + '  feeds:      : ' + stylize(this._feeds.length) + '\n' +
           indent + '  opened      : ' + stylize(this.opened, 'boolean') + '\n' +
           indent + '  name        : ' + stylize(this._name, 'string') + '\n' +
-          // indent + '  peers: ' + stylize(this.peers.length, 'number') + '\n' +
           indent + ')'
-
-    // function fmtFeed (feed) {
-    //   if (!feed) return '(undefined)'
-    //   return stylize(pretty(feed.key), 'string') + ' @ ' + feed.length + ' ' +
-    //     (feed.writable ? '*' : '')
-    // }
   }
+}
+
+function empty (value) {
+  return value === undefined || value === null
 }
