@@ -2,7 +2,7 @@
 
 A peer-to-peer database built on [hypercores](https://github.com/mafintosh/hypercore) and [kappa-core@experimental](https://github.com/Frando/kappa-core#experimental).
 
-*Note: Not yet stable, work in progress!*
+*Note: Docs are a little out of date and will be updated soon*
 
 * Index a set of hypercores efficiently into materialized-view style secondary indexes
 * A simple and universal *record* data model: Each record has an *id*, a *schema*, and a *value*. 
