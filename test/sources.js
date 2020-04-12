@@ -78,12 +78,11 @@ tape('replication', async t => {
       db2.put({ schema: 'doc', value: { title: 'ola', body: 'moon', tags: ['green'] }, id: id1 }, cb)
     },
     cb => {
-      const db2localfeed = db2.getFeed()
+      const db2localfeed = db2.getDefaultWriter()
       const db2localkey = db2localfeed.key
       db.putSource(db2localkey, cb)
     },
-    cb => setTimeout(cb, 500),
-    cb => db.kappa.ready('records', cb),
+    cb => db.sync(cb),
     cb => {
       // console.log('After putSource')
       // console.log('DB', db)

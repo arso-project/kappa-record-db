@@ -14,6 +14,7 @@ const LRU = require('lru-cache')
 const Bitfield = require('fast-bitfield')
 const thunky = require('thunky')
 const crypto = require('hypercore-crypto')
+const Nanoresource = require('nanoresource/emitter')
 
 const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
@@ -22,6 +23,7 @@ const Corestore = require('corestore')
 const { uuid, through, noop } = require('./lib/util')
 const { Header } = require('./lib/messages')
 const mux = require('./lib/mux')
+const SyncMap = require('./lib/sync-map')
 
 const LEN = Symbol('record-size')
 const INFO = Symbol('feed-info')
@@ -39,7 +41,7 @@ const Mode = {
   ROOTFEED: 'rootfeed'
 }
 
-module.exports = class Stack extends EventEmitter {
+module.exports = class Stack extends Nanoresource {
   static uuid () {
     return uuid()
   }
@@ -59,7 +61,9 @@ module.exports = class Stack extends EventEmitter {
     this._id = opts.id || uuid()
 
     this._level = opts.db || memdb()
-    this._feeddb = sub(this._level, 'feeds')
+    this._store = new SyncMap(sub(this._level, 's'), {
+      valueEncoding: 'json'
+    })
 
     if (opts.key) {
       this.address = Buffer.isBuffer(opts.key) ? opts.key : Buffer.from(opts.key, 'hex')
@@ -113,10 +117,7 @@ module.exports = class Stack extends EventEmitter {
     this._feeds = []
     this._streams = []
 
-    this.open = thunky(this._open.bind(this))
-    this.close = thunky(this._close.bind(this))
-    this.ready = this.open
-    this.opened = false
+    this.ready = this.open.bind(this)
   }
 
   get view () {
@@ -157,9 +158,11 @@ module.exports = class Stack extends EventEmitter {
   _open (cb) {
     const self = this
     this.corestore.ready(() => {
-      this._initFeeds(() => {
-        if (this.handlers.open) this.handlers.open(finish)
-        else finish()
+      this._store.open(() => {
+        this._initFeeds(() => {
+          if (this.handlers.open) this.handlers.open(finish)
+          else finish()
+        })
       })
     })
 
@@ -172,22 +175,24 @@ module.exports = class Stack extends EventEmitter {
 
   _initFeeds (cb) {
     const self = this
-    this._openFeeds(() => {
-      if (this._swarmMode === Mode.ROOTFEED) {
-        initRootFeed(this.address, (err, feed) => {
-          if (err) finish(err)
-          else finish(null, feed.key, feed.discoveryKey)
-        })
-      } else {
-        finish(null, this.address || crypto.keyPair().publicKey)
-      }
-    })
+    for (const [key, info] of this._store.entries()) {
+      this._addFeedInternally(key, info)
+    }
+
+    if (this._swarmMode === Mode.ROOTFEED) {
+      initRootFeed(this.address, (err, feed) => {
+        if (err) finish(err)
+        else finish(null, feed.key, feed.discoveryKey)
+      })
+    } else {
+      finish(null, this.address || crypto.keyPair().publicKey)
+    }
 
     function initRootFeed (key, cb) {
       self.addFeed({ name: ROOT_FEED_NAME, key }, (err, feed) => {
         if (err) return cb(err)
         if (feed.writable) {
-          self.addFeed({ name: LOCAL_WRITER_NAME, key }, cb)
+          self.addFeed({ name: LOCAL_WRITER_NAME, key: feed.key }, cb)
         } else {
           self.addFeed({ name: LOCAL_WRITER_NAME }, cb)
         }
@@ -201,16 +206,6 @@ module.exports = class Stack extends EventEmitter {
       self.discoveryKey = discoveryKey || crypto.discoveryKey(key)
       cb()
     }
-  }
-
-  _openFeeds (cb) {
-    const rs = this._feeddb.createReadStream({ gt: 'key/', lt: 'key/z' })
-    rs.on('data', ({ value }) => {
-      value = JSON.parse(value)
-      const { name, key, type, ...info } = value
-      this._addFeedInternally(key, { name, type, info })
-    })
-    rs.on('end', cb)
   }
 
   _createFeed (key, opts) {
@@ -266,14 +261,13 @@ module.exports = class Stack extends EventEmitter {
     feed.append(header, cb)
   }
 
-  getFeedInfo (keyOrName) {
-    const feed = this.getFeed(keyOrName)
+  feedInfo (keyOrName) {
+    const feed = this.feed(keyOrName)
     if (feed && feed[INFO]) return feed[INFO]
     return null
   }
 
-  getFeed (keyOrName) {
-    if (!keyOrName) keyOrName = LOCAL_WRITER_NAME
+  feed (keyOrName) {
     if (Buffer.isBuffer(keyOrName)) keyOrName = keyOrName.toString('hex')
     if (this._feedNames[keyOrName] !== undefined) {
       return this._feeds[this._feedNames[keyOrName]]
@@ -281,18 +275,12 @@ module.exports = class Stack extends EventEmitter {
     return null
   }
 
-  hasFeed (keyOrName) {
-    if (Buffer.isBuffer(keyOrName)) keyOrName = keyOrName.toString('hex')
-    if (this._feedNames[keyOrName] !== undefined) return true
-    return false
-  }
-
   getRootFeed () {
-    return this.getFeed(ROOT_FEED_NAME)
+    return this.feed(ROOT_FEED_NAME)
   }
 
-  getDefaultLocalFeed () {
-    return this.getFeed(LOCAL_WRITER_NAME)
+  getDefaultWriter () {
+    return this.feed(LOCAL_WRITER_NAME)
   }
 
   addFeed (opts, cb = noop) {
@@ -300,17 +288,17 @@ module.exports = class Stack extends EventEmitter {
     let { name, key } = opts
     if (!name && !key) return cb(new Error('Either key or name is required'))
     if (key && Buffer.isBuffer(key)) key = key.toString('hex')
-    if (this.hasFeed(name)) {
-      let info = this.getFeedInfo(name)
+    if (this.feed(name)) {
+      let info = this.feedInfo(name)
       if (key && info.key !== key) return cb(new Error('Invalid key for name'))
-      return cb(null, this.getFeed(name))
+      return cb(null, this.feed(name))
     }
-    if (this.hasFeed(key)) {
-      let info = this.getFeedInfo(key)
+    if (this.feed(key)) {
+      let info = this.feedInfo(key)
       if (info && info.name !== name) {
         this._feedNames[name] = info.id
       }
-      return cb(null, this.getFeed(key))
+      return cb(null, this.feed(key))
     }
 
     if (!opts.type) opts.type = this.defaultFeedType
@@ -333,19 +321,10 @@ module.exports = class Stack extends EventEmitter {
         type: opts.type,
         ...opts.info || {}
       }
-      self._saveFeed(info, err => {
+      self._store.setFlush(info.key, info, err => {
         cb(err, feed)
       })
     }
-  }
-
-  _saveFeed (info, cb) {
-    const { name, key } = info
-    const ops = [
-      { type: 'put', key: 'name/' + name, value: key },
-      { type: 'put', key: 'key/' + key, value: JSON.stringify(info) }
-    ]
-    this._feeddb.batch(ops, cb)
   }
 
   stats (cb) {
@@ -465,7 +444,7 @@ module.exports = class Stack extends EventEmitter {
       opts = {}
     }
     if (opts.wait === undefined) opts.wait = false
-    const feed = this.getFeed(keyOrName)
+    const feed = this.feed(keyOrName)
     if (!feed) return cb(new Error('Feed does not exist'))
     feed.get(seq, opts, (err, value) => {
       if (err) return cb(err)

@@ -53,7 +53,7 @@ tape('minimal kv test with two sourcees', t => {
     cb => checkOne(t, db2, { schema: 'doc' }, '1rev2', 'init db2 ok', cb),
     cb => db2.writer(cb),
     cb => {
-      const db2localfeed = db2.getFeed()
+      const db2localfeed = db2.getDefaultWriter()
       const db2localkey = db2localfeed.key
       db.putSource(db2localkey, { alias: 'w2' }, cb)
     },
