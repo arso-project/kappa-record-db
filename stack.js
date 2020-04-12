@@ -207,8 +207,8 @@ module.exports = class Stack extends EventEmitter {
     const rs = this._feeddb.createReadStream({ gt: 'key/', lt: 'key/z' })
     rs.on('data', ({ value }) => {
       value = JSON.parse(value)
-      const { name, key, type } = value
-      this._addFeedInternally(key, { name, type })
+      const { name, key, type, ...info } = value
+      this._addFeedInternally(key, { name, type, info })
     })
     rs.on('end', cb)
   }
@@ -243,7 +243,7 @@ module.exports = class Stack extends EventEmitter {
     if (!key) throw new Error('Missing key for feed')
     const { name, type } = opts
     let id = this._feeds.length
-    feed[INFO] = { name, type, id, key }
+    feed[INFO] = { name, type, id, key, ...opts.info || {} }
     this._feeds.push(feed)
     this._feedNames[name] = id
     this._feedNames[key] = id
@@ -330,7 +330,8 @@ module.exports = class Stack extends EventEmitter {
       const info = {
         key: feed.key.toString('hex'),
         name: opts.name,
-        type: opts.type
+        type: opts.type,
+        ...opts.info || {}
       }
       self._saveFeed(info, err => {
         cb(err, feed)
@@ -347,7 +348,11 @@ module.exports = class Stack extends EventEmitter {
     this._feeddb.batch(ops, cb)
   }
 
-  stats (cb = noop) {
+  stats (cb) {
+    return this.status(cb)
+  }
+
+  status (cb = noop) {
     const stats = { feeds: [] }
     for (const feed of this._feeds) {
       stats.feeds.push({

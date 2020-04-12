@@ -2,7 +2,7 @@ const debug = require('debug')('db')
 const pretty = require('pretty-hash')
 
 const Stack = require('./stack')
-const { uuid, sink, defaultTrue } = require('./lib/util')
+const { uuid, sink, noop, defaultTrue } = require('./lib/util')
 const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
 const createIndexView = require('./views/indexes')
@@ -20,7 +20,6 @@ module.exports.Stack = Stack
 function defaultDatabase (opts = {}) {
   opts.swarmMode = opts.swarmMode || 'rootfeed'
   // opts.swarmMode = 'multifeed'
-  opts.defaultDatabase = defaultTrue(opts.defaultMiddlewares)
 
   const stack = new Stack(opts)
   const db = new Database(stack, opts)
@@ -33,6 +32,23 @@ function defaultDatabase (opts = {}) {
   stack.putSource = bind(db, db.putSource)
   stack.db = db
 
+  if (opts.swarmMode === 'rootfeed') {
+    const sources = new Sources(stack, {
+      onput: bind(db, db.put),
+      onsource: bind(stack, stack.addFeed)
+    })
+    stack.putSource = bind(sources, sources.put)
+    sources.open(noop)
+  } else {
+    stack.putSource = function (key, info = {}, cb) {
+      if (typeof info === 'function') {
+        cb = info
+        info = {}
+      }
+      stack.addFeed({ key, ...info }, cb)
+    }
+  }
+
   return stack
 }
 
@@ -40,12 +56,6 @@ class Database {
   constructor (stack, opts) {
     this.stack = stack
     this.opts = opts
-    this.sources = new Sources(stack, {
-      onput: (...args) => this.put(...args),
-      onsource: (...args) => {
-        this.stack.addFeed(...args)
-      }
-    })
     this.schemas = new Schema()
 
     this.stack.handlers = {
@@ -59,9 +69,7 @@ class Database {
   }
 
   _onopen (cb) {
-    this.schemas.open(this.stack, () => {
-      this.sources.open(cb)
-    })
+    this.schemas.open(this.stack, cb)
   }
 
   _onload (message, cb) {
@@ -163,12 +171,11 @@ class Sources {
     const qs = this.stack.createQueryStream('records', { schema: 'core/source' }, { live: true })
     qs.once('sync', cb)
     qs.pipe(sink((record, next) => {
-      const { alias, key, type } = record.value
+      const { alias, key, type, ...info } = record.value
       if (type !== FEED_TYPE) return next()
       debug(`[%s] source:add key %s alias %s type %s`, this.stack._name, pretty(key), alias, type)
-      this.stack.addFeed({ alias, key, type })
-      // this.handlers.onsource(record.value)
-      // this.stack.addFeed({ alias, key, type })
+      const opts = { alias, key, type, info }
+      this.handlers.onsource(opts)
       next()
     }))
   }

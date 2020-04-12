@@ -35,7 +35,7 @@ tape('minimal', t => {
   ])
 })
 
-tape('basics', async t => {
+tape('kitchen sink', async t => {
   const db = new Database()
   let id1
   let docIds

@@ -61,6 +61,11 @@ tape('minimal kv test with two sourcees', t => {
     cb => db2.put(doc('2rev1', id), cb),
     cb => checkOne(t, db, { schema: 'doc' }, '2rev1', 'end db1 ok', cb),
     cb => checkOne(t, db2, { schema: 'doc' }, '2rev1', 'end db2 ok', cb),
+    cb => {
+      // console.log('db1', db.status())
+      // console.log('db2', db.status())
+      cb()
+    },
     cb => t.end()
   ])
 })
