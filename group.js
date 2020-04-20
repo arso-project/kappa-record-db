@@ -1,4 +1,3 @@
-const { EventEmitter } = require('events')
 const ram = require('random-access-memory')
 const sub = require('subleveldown')
 const memdb = require('level-mem')
@@ -12,8 +11,7 @@ const pump = require('pump')
 const mutex = require('mutexify')
 const LRU = require('lru-cache')
 const Bitfield = require('fast-bitfield')
-const thunky = require('thunky')
-const crypto = require('hypercore-crypto')
+const hcrypto = require('hypercore-crypto')
 const Nanoresource = require('nanoresource/emitter')
 
 const Kappa = require('kappa-core')
@@ -185,7 +183,7 @@ module.exports = class Group extends Nanoresource {
         else finish(null, feed.key, feed.discoveryKey)
       })
     } else {
-      finish(null, this.address || crypto.keyPair().publicKey)
+      finish(null, this.address || hcrypto.keyPair().publicKey)
     }
 
     function initRootFeed (key, cb) {
@@ -203,7 +201,7 @@ module.exports = class Group extends Nanoresource {
       if (err) return cb(err)
       self.address = key
       self.key = key
-      self.discoveryKey = discoveryKey || crypto.discoveryKey(key)
+      self.discoveryKey = discoveryKey || hcrypto.discoveryKey(key)
       cb()
     }
   }
@@ -213,7 +211,7 @@ module.exports = class Group extends Nanoresource {
     let feed
     if (persist === false) {
       if (!key) {
-        const keyPair = crypto.keyPair()
+        const keyPair = hcrypto.keyPair()
         key = keyPair.key
         opts.secretKey = keyPair.secretKey
       }
