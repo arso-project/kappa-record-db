@@ -16,7 +16,9 @@ module.exports = function createReordView (lvl, db, opts) {
     map (records, next) {
       mapRecordsIntoLevelDB({
         db, records, map: mapToPutOp, level: lvl
-      }, next)
+      }, () => {
+        next()
+      })
     },
 
     api: {

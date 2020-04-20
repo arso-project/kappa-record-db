@@ -157,14 +157,16 @@ module.exports = class Group extends Nanoresource {
     const self = this
     this.corestore.ready(() => {
       this._store.open(() => {
-        this._initFeeds(() => {
+        this._initFeeds((err) => {
+          if (err) finish(err)
           if (this.handlers.open) this.handlers.open(finish)
           else finish()
         })
       })
     })
 
-    function finish () {
+    function finish (err) {
+      if (err) return cb(err)
       self.kappa.resume()
       self.opened = true
       cb()
@@ -190,7 +192,7 @@ module.exports = class Group extends Nanoresource {
       self.addFeed({ name: ROOT_FEED_NAME, key }, (err, rootfeed) => {
         if (err) return cb(err)
         if (rootfeed.writable) {
-          self.addFeed({ name: LOCAL_WRITER_NAME, key: rootfeed.key }, cb)
+          self.addFeed({ name: LOCAL_WRITER_NAME, key: rootfeed.key }, err => cb(err, rootfeed))
         } else {
           self.addFeed({ name: LOCAL_WRITER_NAME }, err => cb(err, rootfeed))
         }
@@ -286,17 +288,19 @@ module.exports = class Group extends Nanoresource {
     let { name, key } = opts
     if (!name && !key) return cb(new Error('Either key or name is required'))
     if (key && Buffer.isBuffer(key)) key = key.toString('hex')
-    if (this.feed(name)) {
-      let info = this.feedInfo(name)
-      if (key && info.key !== key) return cb(new Error('Invalid key for name'))
-      return cb(null, this.feed(name))
-    }
     if (this.feed(key)) {
-      let info = this.feedInfo(key)
+      const info = this.feedInfo(key)
+      const feed = this.feed(key)
       if (info && info.name !== name) {
         this._feedNames[name] = info.id
       }
-      return cb(null, this.feed(key))
+      return onready(feed, cb)
+    }
+    if (this.feed(name)) {
+      const info = this.feedInfo(name)
+      const feed = this.feed(name)
+      if (key && info.key !== key) return cb(new Error('Invalid key for name'))
+      return onready(feed, cb)
     }
 
     if (!opts.type) opts.type = this.defaultFeedType
@@ -341,15 +345,17 @@ module.exports = class Group extends Nanoresource {
         stats: feed.stats
       })
     }
-    cb(null, stats)
-    return stats
-    // let pending = Object.values(this.kappa.flows).length
-    // for (const flow of Object.values(this.kappa.flows)) {
-    //   flow._source.subscription.getState((_err, state) => {
-    //     stats.kappa[flow.name] = state
-    //     if (--pending === 0) cb(null, stats)
-    //   })
-    // }
+
+    if (!cb) return stats
+
+    stats.kappa = {}
+    let pending = Object.values(this.kappa.flows).length
+    for (const flow of Object.values(this.kappa.flows)) {
+      flow._source.subscription.getState((_err, state) => {
+        stats.kappa[flow.name] = state
+        if (--pending === 0) cb(null, stats)
+      })
+    }
   }
 
   writer (opts, cb) {
@@ -620,4 +626,9 @@ module.exports = class Group extends Nanoresource {
 
 function empty (value) {
   return value === undefined || value === null
+}
+
+function onready (feed, cb) {
+  if (feed.opened) cb(null, feed)
+  else feed.ready(() => cb(null, feed))
 }
