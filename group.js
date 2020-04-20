@@ -3,7 +3,7 @@ const ram = require('random-access-memory')
 const sub = require('subleveldown')
 const memdb = require('level-mem')
 const collect = require('stream-collector')
-const { PassThrough } = require('stream')
+const { Transform } = require('stream')
 const hypercore = require('hypercore')
 const debug = require('debug')('db')
 const inspect = require('inspect-custom-symbol')
@@ -189,12 +189,12 @@ module.exports = class Group extends Nanoresource {
     }
 
     function initRootFeed (key, cb) {
-      self.addFeed({ name: ROOT_FEED_NAME, key }, (err, feed) => {
+      self.addFeed({ name: ROOT_FEED_NAME, key }, (err, rootfeed) => {
         if (err) return cb(err)
-        if (feed.writable) {
-          self.addFeed({ name: LOCAL_WRITER_NAME, key: feed.key }, cb)
+        if (rootfeed.writable) {
+          self.addFeed({ name: LOCAL_WRITER_NAME, key: rootfeed.key }, cb)
         } else {
-          self.addFeed({ name: LOCAL_WRITER_NAME }, cb)
+          self.addFeed({ name: LOCAL_WRITER_NAME }, err => cb(err, rootfeed))
         }
       })
     }
@@ -548,7 +548,13 @@ module.exports = class Group extends Nanoresource {
     const self = this
     if (typeof opts.load === 'undefined') opts.load = true
 
-    const proxy = new PassThrough({ objectMode: true })
+    const proxy = new Transform({
+      objectMode: true,
+      transform (chunk, enc, next) {
+        this.push(chunk)
+        next()
+      }
+    })
     const flow = this.kappa.flows[name]
 
     if (!flow || !flow.view.query) {
@@ -567,6 +573,7 @@ module.exports = class Group extends Nanoresource {
     function createStream () {
       const qs = flow.view.query(args, opts)
       qs.once('sync', () => proxy.emit('sync'))
+      qs.on('error', err => proxy.emit('error', err))
       if (opts.load !== false) pump(qs, self.createLoadStream(opts), proxy)
       else pump(qs, proxy)
     }
