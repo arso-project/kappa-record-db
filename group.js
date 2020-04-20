@@ -41,7 +41,7 @@ const Mode = {
   ROOTFEED: 'rootfeed'
 }
 
-module.exports = class Stack extends Nanoresource {
+module.exports = class Group extends Nanoresource {
   static uuid () {
     return uuid()
   }

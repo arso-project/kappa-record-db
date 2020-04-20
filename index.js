@@ -1,7 +1,7 @@
 const debug = require('debug')('db')
 const pretty = require('pretty-hash')
 
-const Stack = require('./stack')
+const Group = require('./group')
 const { uuid, sink, noop, defaultTrue } = require('./lib/util')
 const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
@@ -15,61 +15,61 @@ const SCHEMA_SOURCE = 'core/source'
 const bind = (obj, fn) => fn.bind(obj)
 
 module.exports = defaultDatabase
-module.exports.Stack = Stack
+module.exports.Group = Group
 
 function defaultDatabase (opts = {}) {
   opts.swarmMode = opts.swarmMode || 'rootfeed'
   // opts.swarmMode = 'multifeed'
 
-  const stack = new Stack(opts)
-  const db = new Database(stack, opts)
+  const group = new Group(opts)
+  const db = new Database(group, opts)
 
-  stack.put = bind(db, db.put)
-  stack.del = bind(db, db.del)
-  stack.putSchema = bind(db, db.putSchema)
-  stack.getSchema = bind(db, db.getSchema)
-  stack.getSchemas = bind(db, db.getSchemas)
-  stack.putSource = bind(db, db.putSource)
-  stack.db = db
+  group.put = bind(db, db.put)
+  group.del = bind(db, db.del)
+  group.putSchema = bind(db, db.putSchema)
+  group.getSchema = bind(db, db.getSchema)
+  group.getSchemas = bind(db, db.getSchemas)
+  group.putSource = bind(db, db.putSource)
+  group.db = db
 
   if (opts.swarmMode === 'rootfeed') {
-    const sources = new Sources(stack, {
+    const sources = new Sources(group, {
       onput: bind(db, db.put),
-      onsource: bind(stack, stack.addFeed)
+      onsource: bind(group, group.addFeed)
     })
-    stack.putSource = bind(sources, sources.put)
+    group.putSource = bind(sources, sources.put)
     sources.open(noop)
   } else {
-    stack.putSource = function (key, info = {}, cb) {
+    group.putSource = function (key, info = {}, cb) {
       if (typeof info === 'function') {
         cb = info
         info = {}
       }
-      stack.addFeed({ key, ...info }, cb)
+      group.addFeed({ key, ...info }, cb)
     }
   }
 
-  return stack
+  return group
 }
 
 class Database {
-  constructor (stack, opts) {
-    this.stack = stack
+  constructor (group, opts) {
+    this.group = group
     this.opts = opts
     this.schemas = new Schema()
 
-    this.stack.handlers = {
+    this.group.handlers = {
       onload: this._onload.bind(this),
       onappend: this._onappend.bind(this),
       open: this._onopen.bind(this)
     }
-    this.stack.use('kv', createKvView)
-    this.stack.use('records', createRecordsView, { schemas: this.schemas })
-    this.stack.use('index', createIndexView, { schemas: this.schemas })
+    this.group.use('kv', createKvView)
+    this.group.use('records', createRecordsView, { schemas: this.schemas })
+    this.group.use('index', createIndexView, { schemas: this.schemas })
   }
 
   _onopen (cb) {
-    this.schemas.open(this.stack, cb)
+    this.schemas.open(this.group, cb)
   }
 
   _onload (message, cb) {
@@ -99,7 +99,7 @@ class Database {
 
     record.timestamp = Date.now()
 
-    this.stack.view.kv.getLinks(record, (err, links) => {
+    this.group.view.kv.getLinks(record, (err, links) => {
       if (err && err.status !== 404) return cb(err)
       record.links = links || []
       const buf = Record.encode(record)
@@ -109,7 +109,7 @@ class Database {
 
   put (record, opts, cb) {
     record.op = Record.PUT
-    this.stack.append(record, opts, cb)
+    this.group.append(record, opts, cb)
   }
 
   del (id, opts, cb) {
@@ -118,11 +118,11 @@ class Database {
       id,
       op: Record.DEL
     }
-    this.stack.append(record, opts, cb)
+    this.group.append(record, opts, cb)
   }
 
   putSchema (name, schema, cb) {
-    this.stack.ready(() => {
+    this.group.ready(() => {
       const value = this.schemas.parseSchema(name, schema)
       if (!value) return cb(this.schemas.error)
       const record = {
@@ -130,7 +130,7 @@ class Database {
         value
       }
       this.schemas.put(value)
-      this.stack.put(record, cb)
+      this.group.put(record, cb)
     })
   }
 
@@ -162,18 +162,18 @@ class Database {
 }
 
 class Sources {
-  constructor (stack, handlers) {
-    this.stack = stack
+  constructor (group, handlers) {
+    this.group = group
     this.handlers = handlers
   }
 
   open (cb) {
-    const qs = this.stack.createQueryStream('records', { schema: 'core/source' }, { live: true })
+    const qs = this.group.createQueryStream('records', { schema: 'core/source' }, { live: true })
     qs.once('sync', cb)
     qs.pipe(sink((record, next) => {
       const { alias, key, type, ...info } = record.value
       if (type !== FEED_TYPE) return next()
-      debug(`[%s] source:add key %s alias %s type %s`, this.stack._name, pretty(key), alias, type)
+      debug(`[%s] source:add key %s alias %s type %s`, this.group._name, pretty(key), alias, type)
       const opts = { alias, key, type, info }
       this.handlers.onsource(opts)
       next()

@@ -45,11 +45,11 @@ function mapToIndex (msg, db) {
     if (!def.index) continue
     if (typeof value[field] === 'undefined') continue
 
-    if (def.type === 'array') var values = value[field]
+    if (def.type === 'array' && Array.isArray(value)) var values = value[field]
     else values = [value[field]]
-    values.forEach(val => {
+    values.forEach(value => {
       ops.push({
-        key: [schemaName, field, val, lseq].join(CHAR_SPLIT),
+        key: [schemaName, field, value, lseq].join(CHAR_SPLIT),
         value: ''
       })
     })
