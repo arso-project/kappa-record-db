@@ -19,7 +19,7 @@ module.exports = function indexedView (lvl, db, opts) {
     api: {
       query (kappa, opts, cb) {
         // const { schema, prop, value, gt, lt, gte, lte, reverse, limit } = opts
-        const proxy = transform()
+        const proxy = transform(opts)
         if (!opts.schema || !opts.prop) {
           proxy.destroy(new Error('schema and prop are required.'))
         } else {
@@ -58,7 +58,8 @@ function mapToIndex (msg, db) {
 }
 
 function queryOptsToLevelOpts (opts) {
-  const { schema, prop, reverse, limit, value, gt, gte, lt, lte } = opts
+  let { schema, prop, reverse, limit, offset, value, gt, gte, lt, lte } = opts
+  if (offset && limit) limit = limit + offset
   const lvlopts = { reverse, limit }
   const key = schema + CHAR_SPLIT + prop + CHAR_SPLIT
   lvlopts.gt = key + CHAR_SPLIT
@@ -82,8 +83,12 @@ function queryOptsToLevelOpts (opts) {
   return lvlopts
 }
 
-function transform () {
+function transform (opts) {
+  let offset = opts.offset || null
+  let i = 0
   return through.obj(function (row, enc, next) {
+    i += 1
+    if (offset && i < offset) return next()
     const decoded = decodeNode(row)
     this.push(decoded)
     next()
