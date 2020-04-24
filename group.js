@@ -449,7 +449,7 @@ module.exports = class Group extends Nanoresource {
     }
     if (opts.wait === undefined) opts.wait = false
     const feed = this.feed(keyOrName)
-    if (!feed) return cb(new Error('Feed does not exist'))
+    if (!feed) return cb(new Error('Feed does not exist: ' + keyOrName))
     feed.get(seq, opts, (err, value) => {
       if (err) return cb(err)
       const { key, type: feedType } = feed[INFO]
