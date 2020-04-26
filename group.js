@@ -583,10 +583,10 @@ module.exports = class Group extends Nanoresource {
     }
   }
 
-  sync (cb) {
+  sync (views, cb) {
     process.nextTick(() => {
       this.lock(release => {
-        this.kappa.ready(cb)
+        this.kappa.ready(views, cb)
         release()
       })
     })
