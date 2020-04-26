@@ -81,6 +81,7 @@ class Database {
 
   _onappend (record, opts, cb) {
     if (opts.feedType !== FEED_TYPE) return cb(null, record)
+    if (!record.schema) return cb(new Error('schema is required'))
     if (record.op === undefined) record.op = Record.PUT
     if (record.op === 'put') record.op = Record.PUT
     if (record.op === 'del') record.op = Record.DEL
