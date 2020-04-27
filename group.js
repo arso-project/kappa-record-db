@@ -237,7 +237,7 @@ module.exports = class Group extends Nanoresource {
     if (!key && feed.key) key = feed.key.toString('hex')
     if (!key) throw new Error('Missing key for feed')
     const { name, type } = opts
-    let id = this._feeds.length
+    const id = this._feeds.length
     feed[INFO] = { name, type, id, key, ...opts.info || {} }
     this._feeds.push(feed)
     this._feedNames[name] = id
