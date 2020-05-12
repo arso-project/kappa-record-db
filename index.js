@@ -143,6 +143,11 @@ class Database {
     return this.schemas.list()
   }
 
+  deleteSchema (name) {
+    console.log("Deleting schema now")
+    return this.schemas.delete(name)
+  }
+
   putSource (key, info = {}, cb) {
     // opts should/can include: { alias }
     if (typeof info === 'function') {
