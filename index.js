@@ -144,7 +144,6 @@ class Database {
   }
 
   deleteSchema (name) {
-    console.log("Deleting schema now")
     return this.schemas.delete(name)
   }
 
