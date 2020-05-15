@@ -110,10 +110,10 @@ class Database {
     this.group.append(record, opts, cb)
   }
 
-  del (id, opts, cb) {
-    if (typeof id === 'object') id = id.id
+  del ({ id, schema }, opts, cb) {
     const record = {
       id,
+      schema,
       op: Record.DEL
     }
     this.group.append(record, opts, cb)
@@ -171,7 +171,7 @@ class Sources {
     qs.pipe(sink((record, next) => {
       const { alias, key, type, ...info } = record.value
       if (type !== FEED_TYPE) return next()
-      debug(`[%s] source:add key %s alias %s type %s`, this.group._name, pretty(key), alias, type)
+      debug('[%s] source:add key %s alias %s type %s', this.group._name, pretty(key), alias, type)
       const opts = { alias, key, type, info }
       this.handlers.onsource(opts)
       next()
