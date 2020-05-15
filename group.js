@@ -110,12 +110,16 @@ module.exports = class Group extends Nanoresource {
       })
     }
 
-    this._api = {}
     this._feedNames = {}
     this._feeds = []
     this._streams = []
+    this._feedTypes = {}
 
     this.ready = this.open.bind(this)
+  }
+
+  registerFeedType (name, handlers) {
+    this._feedTypes[name] = handlers
   }
 
   get view () {
@@ -123,7 +127,7 @@ module.exports = class Group extends Nanoresource {
   }
 
   get api () {
-    return { ...this.kappa.view, ...this._api }
+    return this.kappa.api
   }
 
   use (name, createView, opts = {}) {
@@ -136,6 +140,7 @@ module.exports = class Group extends Nanoresource {
         next(messages.filter(msg => msg.seq !== 0))
       }
     }
+    if (!opts.context) opts.context = this
     this.kappa.use(name, this.indexer.source(sourceOpts), view, opts)
   }
 
@@ -159,7 +164,6 @@ module.exports = class Group extends Nanoresource {
       this._store.open(() => {
         this._initFeeds((err) => {
           if (err) finish(err)
-          if (this.handlers.open) this.handlers.open(finish)
           else finish()
         })
       })
@@ -333,16 +337,17 @@ module.exports = class Group extends Nanoresource {
     return this.status(cb)
   }
 
-  status (cb = noop) {
+  status (cb) {
     const stats = { feeds: [] }
     for (const feed of this._feeds) {
       stats.feeds.push({
         key: feed.key.toString('hex'),
+        writable: feed.writable,
         length: feed.length,
         byteLength: feed.byteLength,
-        writable: feed.writable,
-        ...feed[INFO],
-        stats: feed.stats
+        downloadedBlocks: feed.downloaded(0, feed.length),
+        stats: feed.stats,
+        info: feed[INFO]
       })
     }
 
@@ -370,6 +375,7 @@ module.exports = class Group extends Nanoresource {
     }
     this.addFeed(opts, (err, feed) => {
       if (err) return cb(err)
+      if (!feed.writable) return cb(new Error('Feed is not writable'))
       cb(null, feed)
     })
   }
@@ -387,18 +393,39 @@ module.exports = class Group extends Nanoresource {
       self.writer(opts.feed, (err, feed) => {
         if (err) return release(cb, err)
         opts.feedType = feed[INFO].type
-        if (this.handlers.onappend) this.handlers.onappend(message, opts, append)
-        else append(null, message, {})
-
-        function append (err, buf, result) {
+        self._onappend(message, opts, (err, buf, result) => {
           if (err) return release(cb, err)
           feed.append(buf, err => {
             if (err) return release(cb, err)
+            // if (!result.key) result.key = feed.key
+            // if (!result.seq) result.seq = feed.length - 1
             release(cb, err, result)
           })
-        }
+        })
       })
     })
+  }
+
+  _onappend (message, opts, cb) {
+    const { feedType } = opts
+    if (this._feedTypes[feedType] && this._feedTypes[feedType].onappend) {
+      this._feedTypes[feedType].onappend(message, opts, cb)
+    } else if (this.handlers.onappend) {
+      this.handlers.onappend(message, opts, cb)
+    } else {
+      cb(null, message, {})
+    }
+  }
+
+  _onload (message, opts, cb) {
+    const { feedType } = message
+    if (this._feedTypes[feedType] && this._feedTypes[feedType].onload) {
+      this._feedTypes[feedType].onload(message, opts, cb)
+    } else if (this.handlers.onload) {
+      this.handlers.onload(message, opts, cb)
+    } else {
+      cb(null, message)
+    }
   }
 
   batch (messages, opts, cb) {
@@ -408,18 +435,15 @@ module.exports = class Group extends Nanoresource {
     }
     const self = this
     this.lock(release => {
-      let batch = []
-      let errs = []
-      let results = []
+      const batch = []
+      const errs = []
+      const results = []
       let pending = messages.length
       self.writer(opts.feed, (err, feed) => {
         if (err) return release(cb, err)
         opts.feedType = feed[INFO].type
-        for (let message of messages) {
-          process.nextTick(() => {
-            if (this.handlers.onappend) this.handlers.onappend(message, opts, done)
-            else done(null, message, {})
-          })
+        for (const message of messages) {
+          process.nextTick(() => this._onappend(message, opts, done))
         }
         function done (err, buf, result) {
           if (err) errs.push(err)
@@ -454,8 +478,7 @@ module.exports = class Group extends Nanoresource {
       if (err) return cb(err)
       const { key, type: feedType } = feed[INFO]
       const message = { key, seq, value, feedType }
-      if (this.handlers.onload) this.handlers.onload(message, cb)
-      else cb(null, message)
+      this._onload(message, opts, cb)
     })
   }
 
@@ -559,9 +582,8 @@ module.exports = class Group extends Nanoresource {
         next()
       }
     })
-    const flow = this.kappa.flows[name]
 
-    if (!flow || !flow.view.query) {
+    if (!this.view[name] || !this.view[name].query) {
       proxy.destroy(new Error('Invalid query name: ' + name))
       return proxy
     }
@@ -575,7 +597,7 @@ module.exports = class Group extends Nanoresource {
     return proxy
 
     function createStream () {
-      const qs = flow.view.query(args, opts)
+      const qs = self.view[name].query(args, opts)
       qs.once('sync', () => proxy.emit('sync'))
       qs.on('error', err => proxy.emit('error', err))
       if (opts.load !== false) pump(qs, self.createLoadStream(opts), proxy)

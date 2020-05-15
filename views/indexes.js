@@ -32,29 +32,29 @@ module.exports = function indexedView (lvl, db, opts) {
       }
     }
   }
-}
 
-function mapToIndex (msg, db) {
-  const schema = db.getSchema(msg)
-  const ops = []
-  const { id, key: source, seq, schema: schemaName, value, lseq } = msg
-  if (!schema || !schema.properties) return ops
-  // TODO: Recursive?
-  for (const [field, def] of Object.entries(schema.properties)) {
-    // Only care for fields that want to be indexed and are not undefined.
-    if (!def.index) continue
-    if (typeof value[field] === 'undefined') continue
+  function mapToIndex (msg, db) {
+    const schema = schemas.get(msg)
+    const ops = []
+    const { id, key: source, seq, schema: schemaName, value, lseq } = msg
+    if (!schema || !schema.properties) return ops
+    // TODO: Recursive?
+    for (const [field, def] of Object.entries(schema.properties)) {
+      // Only care for fields that want to be indexed and are not undefined.
+      if (!def.index) continue
+      if (typeof value[field] === 'undefined') continue
 
-    if (def.type === 'array' && Array.isArray(value)) var values = value[field]
-    else values = [value[field]]
-    values.forEach(value => {
-      ops.push({
-        key: [schemaName, field, value, lseq].join(CHAR_SPLIT),
-        value: ''
+      if (def.type === 'array' && Array.isArray(value)) var values = value[field]
+      else values = [value[field]]
+      values.forEach(value => {
+        ops.push({
+          key: [schemaName, field, value, lseq].join(CHAR_SPLIT),
+          value: ''
+        })
       })
-    })
+    }
+    return ops
   }
-  return ops
 }
 
 function queryOptsToLevelOpts (opts) {

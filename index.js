@@ -57,30 +57,27 @@ class Database {
     this.group = group
     this.opts = opts
     this.schemas = new Schema()
-
-    this.group.handlers = {
+    this.group.registerFeedType(FEED_TYPE, {
       onload: this._onload.bind(this),
-      onappend: this._onappend.bind(this),
-      open: this._onopen.bind(this)
-    }
+      onappend: this._onappend.bind(this)
+    })
+    const viewOpts = { schemas: this.schemas }
     this.group.use('kv', createKvView)
-    this.group.use('records', createRecordsView, { schemas: this.schemas })
-    this.group.use('index', createIndexView, { schemas: this.schemas })
+    this.group.use('records', createRecordsView, viewOpts)
+    this.group.use('index', createIndexView, viewOpts)
   }
 
   _onopen (cb) {
     this.schemas.open(this.group, cb)
   }
 
-  _onload (message, cb) {
-    if (message.feedType !== FEED_TYPE) return cb(null, message)
+  _onload (message, opts, cb) {
     const { key, seq, lseq, value, feedType } = message
     const record = Record.decode(value, { key, seq, lseq, feedType })
     cb(null, record)
   }
 
   _onappend (record, opts, cb) {
-    if (opts.feedType !== FEED_TYPE) return cb(null, record)
     if (!record.schema) return cb(new Error('schema is required'))
     if (record.op === undefined) record.op = Record.PUT
     if (record.op === 'put') record.op = Record.PUT
