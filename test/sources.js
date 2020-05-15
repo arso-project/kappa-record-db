@@ -82,6 +82,8 @@ tape('replication', async t => {
       const db2localkey = db2localfeed.key
       db.putSource(db2localkey, cb)
     },
+    // TODO: Find a way to remove the timeout.
+    cb => setTimeout(cb, 100),
     cb => db.sync(cb),
     cb => {
       // console.log('After putSource')

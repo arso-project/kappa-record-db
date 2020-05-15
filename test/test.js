@@ -29,6 +29,12 @@ tape('minimal', t => {
       t.error(err)
       t.equal(records.length, 1)
       t.equal(records[0].value.title, 'hello')
+      db.put({ id: records[0].id, schema: 'doc', value: { title: 'hello2', body: 'world' } }, cb)
+    }),
+    cb => db.query('records', { schema: 'doc' }, { waitForSync: true }, (err, records) => {
+      t.error(err)
+      t.equal(records.length, 1)
+      t.equal(records[0].value.title, 'hello2')
       cb()
     }),
     () => t.end()
