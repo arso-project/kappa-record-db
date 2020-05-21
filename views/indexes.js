@@ -38,6 +38,7 @@ module.exports = function indexedView (lvl, db, opts) {
     const ops = []
     const { id, key: source, seq, schema: schemaName, value, lseq } = msg
     if (!schema || !schema.properties) return ops
+    if (!value || typeof value !== 'object') return ops
     // TODO: Recursive?
     for (const [field, def] of Object.entries(schema.properties)) {
       // Only care for fields that want to be indexed and are not undefined.

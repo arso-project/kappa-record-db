@@ -84,8 +84,9 @@ class Database {
     if (record.op === 'del') record.op = Record.DEL
     if (!record.id) record.id = uuid()
 
+    record.schema = this.schemas.resolveName(record.schema)
+
     if (record.op === Record.PUT) {
-      record.schema = this.schemas.resolveName(record.schema)
       let validate = false
       if (this.opts.validate) validate = true
       if (typeof opts.validate !== 'undefined') validate = !!opts.validate

@@ -41,6 +41,34 @@ tape('minimal', t => {
   ])
 })
 
+tape('delete', t => {
+  const db = new Database()
+  const schema = 'doc'
+  let id
+  runAll([
+    cb => db.putSchema(schema, docSchema, cb),
+    cb => db.put({ schema, value: { title: 'hello', body: 'world' } }, (err, id1) => {
+      if (err) return cb(err)
+      id = id1
+      cb()
+    }),
+    cb => db.sync(cb),
+    cb => db.query('records', { id }, (err, records) => {
+      t.error(err)
+      t.equal(records.length, 1, 'queried one record')
+      cb()
+    }),
+    cb => db.del({ id, schema }, cb),
+    cb => db.sync(cb),
+    cb => db.query('records', { id }, (err, records) => {
+      t.error(err)
+      t.equal(records.length, 0, 'queried zero records')
+      cb()
+    }),
+    cb => t.end()
+  ])
+})
+
 tape('kitchen sink', async t => {
   const db = new Database()
   let id1
