@@ -1,8 +1,9 @@
 const debug = require('debug')('db')
 const pretty = require('pretty-hash')
+const thunky = require('thunky')
 
 const Group = require('./group')
-const { uuid, sink, noop, defaultTrue } = require('./lib/util')
+const { uuid, sink, noop } = require('./lib/util')
 const createKvView = require('./views/kv')
 const createRecordsView = require('./views/records')
 const createIndexView = require('./views/indexes')
@@ -58,6 +59,7 @@ class Database {
     this.opts = opts
     this.schemas = new Schema()
     this.group.registerFeedType(FEED_TYPE, {
+      onopen: this._onopen.bind(this),
       onload: this._onload.bind(this),
       onappend: this._onappend.bind(this)
     })

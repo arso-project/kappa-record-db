@@ -18,7 +18,7 @@ const Kappa = require('kappa-core')
 const Indexer = require('kappa-sparse-indexer')
 const Corestore = require('corestore')
 
-const { uuid, through, noop } = require('./lib/util')
+const { uuid, through, noop, once } = require('./lib/util')
 const { Header } = require('./lib/messages')
 const mux = require('./lib/mux')
 const SyncMap = require('./lib/sync-map')
@@ -160,19 +160,34 @@ module.exports = class Group extends Nanoresource {
 
   _open (cb) {
     const self = this
+    cb = once(cb)
     this.corestore.ready(() => {
       this._store.open(() => {
         this._initFeeds((err) => {
-          if (err) finish(err)
-          else finish()
+          if (err) prefinish(err)
+          else prefinish()
         })
       })
     })
+
+    function prefinish (err) {
+      if (err) return cb(err)
+      let pending = 1
+      for (const feedType of Object.values(self._feedTypes)) {
+        if (feedType.onopen) ++pending && feedType.onopen(done)
+      }
+      done()
+      function done () {
+        if (err) return finish(err)
+        if (--pending === 0) finish()
+      }
+    }
 
     function finish (err) {
       if (err) return cb(err)
       self.kappa.resume()
       self.opened = true
+      self.emit('open')
       cb()
     }
   }
